@@ -4,7 +4,7 @@ import os
 import datetime
 import sys
 import re
-import json  # 👈 新增了这个库用来手动解析
+import json
 from datetime import timezone, timedelta
 from openai import OpenAI
 
@@ -13,7 +13,7 @@ TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-# 设置北京时区 (UTC+8)
+# 设置北京时区
 SHA_TZ = timezone(timedelta(hours=8), 'Asia/Shanghai')
 
 def get_news(minutes_lookback=None):
@@ -21,7 +21,10 @@ def get_news(minutes_lookback=None):
     【数据源】使用东方财富 7x24 小时快讯
     """
     timestamp = int(time.time() * 1000)
-    url = f"https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_50_1_.html?_={timestamp}"
+    
+    # ⚡️ 核心修改 1：把获取数量从 50 改为 100，防止漏掉被刷下去的重磅新闻
+    # URL 里的 _100_ 代表 pageSize
+    url = f"https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_100_1_.html?_={timestamp}"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -31,31 +34,26 @@ def get_news(minutes_lookback=None):
     
     try:
         resp = requests.get(url, headers=headers, timeout=15)
-        
-        # === 👇 核心修复逻辑在这里 👇 ===
-        # 1. 获取原始文本
         content = resp.text.strip()
         
-        # 2. 如果是 var xxx = {...} 格式，进行清洗
+        # 清洗 var xxx = {...}
         if content.startswith("var "):
-            # 找到第一个等号，取等号后面的内容
             content = content.split("=", 1)[1].strip()
-            # 去掉末尾的分号
             if content.endswith(";"):
                 content = content[:-1]
         
-        # 3. 手动解析 JSON
         data = json.loads(content)
         items = data.get('LivesList', [])
-        # ================================
         
         valid_news = []
         now = datetime.datetime.now(SHA_TZ)
         
-        # 确定筛选的时间范围
+        # 确定筛选范围
         if minutes_lookback:
-            time_threshold = now - timedelta(minutes=minutes_lookback + 2)
+            # 监控模式：最近 x 分钟
+            time_threshold = now - timedelta(minutes=minutes_lookback + 5)
         else:
+            # 日报模式：严格的过去 24 小时
             time_threshold = now - timedelta(hours=24)
         
         for item in items:
@@ -71,7 +69,6 @@ def get_news(minutes_lookback=None):
             
             content_text = item.get('digest', '')
             title = item.get('title', '')
-            
             if len(title) < 5:
                 title = content_text[:50] + "..." if len(content_text) > 50 else content_text
             
@@ -81,39 +78,65 @@ def get_news(minutes_lookback=None):
             valid_news.append({
                 "title": title,
                 "link": link,
-                "time": news_time.strftime('%H:%M')
+                "time": news_time.strftime('%H:%M') # 只留时分
             })
             
         return valid_news
     except Exception as e:
         print(f"❌ 抓取失败: {e}")
-        # 如果出错，打印前100个字符看看服务器到底回了什么（方便调试）
-        try:
-            print(f"📡 服务器响应内容: {resp.text[:100]}")
-        except:
-            pass
         return []
 
 def analyze_and_notify(news_list, mode="daily"):
     if not news_list:
-        print("📭 当前时间段内无新闻")
+        print("📭 无新闻")
         return
 
     client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
     
-    # === 模式 A: 每日早报 ===
+    # === 模式 A: 每日早报 (深度筛选版) ===
     if mode == "daily":
-        print("📝 正在生成早报...")
-        news_titles = [f"- {n['title']}" for n in news_list[:20]]
+        print("📝 正在生成深度早报...")
         
+        # 把抓到的所有新闻标题都给 AI（只要不超 Token，越多越好，让 AI 去挑）
+        # 我们这里把 100 条里符合时间的都丢进去，大概率不会超 DeepSeek 的上下文
+        news_inputs = [f"- {n['time']} {n['title']}" for n in news_list]
+        news_text_block = chr(10).join(news_inputs)
+
+        # ⚡️ 核心修改 2：使用更强的“策略分析师”提示词
         prompt = f"""
-        你是华尔街资深交易员。请根据以下中国财经快讯写一份简报：
-        {chr(10).join(news_titles)}
+        你是一位极其严格的A股首席策略分析师。你的客户是专业的基金经理。
+        这里是过去24小时的快讯列表：
         
-        要求：
-        1. 用【一句话】概括当前市场核心情绪。
-        2. 列出 3 个最重要的市场信号（加 emoji）。
-        3. 如果有明确的利好/利空板块，直接点名。
+        {news_text_block}
+
+        【任务目标】：
+        请从上述杂乱的信息中，**只筛选出**对今日A股走势有【实质性影响】的消息。
+        
+        【筛选标准（非常严格）】：
+        1. ✅ **宏观政策**：央行（降准/降息/MLF）、国务院、发改委发布的重磅文件。
+        2. ✅ **核心数据**：GDP、CPI、PPI、社融、PMI数据超预期/不及预期。
+        3. ✅ **行业巨震**：牵扯到万亿市值板块（如新能源、白酒、半导体、券商）的重大利好/利空。
+        4. ✅ **外部冲击**：美联储决议、汇率剧烈波动、地缘政治大事件。
+        
+        ❌ **坚决剔除**：
+        - 个股的小道消息或普通财报（除非是茅台、宁德时代这种风向标）。
+        - 分析师的口水话、普通的盘中异动播报。
+        - 没有任何增量信息的车轱辘话。
+
+        【输出格式】：
+        请生成一份《核心内参》，结构如下：
+        
+        🌐 **市场情绪定调**：(用一句话判断今日是 乐观/谨慎/恐慌，并说明核心理由)
+        
+        🔥 **必读核心事件**：
+        (这里不限制数量，有几条真正的大事就写几条。按影响力排序。如果没有大事，就写“今日无影响趋势的重大消息”。)
+        1. [事件名称] + 深度解读（一针见血指出它利好什么板块，或者利空什么）
+        2. ...
+        
+        📊 **板块资金雷达**：
+        (基于消息判断，今日哪些板块可能成为风口？哪些需要避险？)
+        
+        (注意：直接输出内容，不要使用Markdown代码块，保持排版简洁清晰)
         """
         
         try:
@@ -122,31 +145,31 @@ def analyze_and_notify(news_list, mode="daily"):
                 messages=[{"role": "user", "content": prompt}], stream=False
             )
             summary = resp.choices[0].message.content
-            links_text = "\n".join([f"• {n['title']} ({n['time']})" for n in news_list[:15]])
-            final_msg = f"<b>📅 东方财富早报</b>\n\n{summary}\n\n<b>📰 24h 资讯精选：</b>\n{links_text}"
+            
+            # 发送早报（不再附带长长的新闻流水账链接，只看分析核心）
+            current_date = datetime.datetime.now(SHA_TZ).strftime("%m月%d日")
+            final_msg = f"<b>📅 股市核心内参 ({current_date})</b>\n\n{summary}\n\n<i>(由 AI 剔除 90% 无效噪音，仅保留关键信息)</i>"
             send_tg(final_msg)
             
         except Exception as e:
-            print(f"❌ AI 生成早报失败: {e}")
-            send_tg(f"<b>📅 东方财富早报 (AI暂不可用)</b>\n\n" + "\n".join([f"• {n['title']}" for n in news_list[:15]]))
+            print(f"❌ AI 生成失败: {e}")
+            send_tg(f"⚠️ AI 罢工了，请检查日志。")
 
-    # === 模式 B: 突发监控 ===
+    # === 模式 B: 突发监控 (逻辑保持不变，依然灵敏) ===
     elif mode == "monitor":
-        print("👮 正在进行风险监控...")
-        news_titles = [f"{i}. {n['title']}" for i, n in enumerate(news_list[:6])]
+        print("👮 监控模式...")
+        # 监控只看最新的 8 条
+        news_titles = [f"{i}. {n['title']}" for i, n in enumerate(news_list[:8])]
         
         prompt = f"""
-        你是一个极其严格的风控官。请审阅这几条最新快讯：
+        你是风控官。审阅最新快讯：
         {chr(10).join(news_titles)}
 
-        请判断其中是否包含【超级重磅】事件。
-        【判断标准】：
-        - 必须是：央行降息/加息、战争爆发、国家级重磅政策、巨头(腾讯/阿里/苹果)暴雷或被查、股市崩盘。
-        - 排除：普通财报、股价小幅波动、分析师观点、行业小新闻。
-
-        【输出格式】：
-        如果包含重磅事件，输出：ALERT|新闻序号|一句话犀利解读
-        如果没有，仅输出：NO
+        判断是否包含【导致股市瞬间变盘】的超级重磅事件。
+        标准：战争、央行大动作、国家级政策、巨头暴雷。
+        
+        有则输出：ALERT|新闻序号|一句话解读
+        无则输出：NO
         """
         
         try:
@@ -167,40 +190,34 @@ def analyze_and_notify(news_list, mode="daily"):
                             f"<b>🚨 突发重大消息！</b>\n\n"
                             f"{comment}\n\n"
                             f"📰 {target_news['title']}\n"
-                            f"⏰ 时间: {target_news['time']} (来源: 东方财富)"
+                            f"⏰ {target_news['time']}"
                         )
                         send_tg(msg)
-                        print("✅ 已发送突发警报")
-                    except:
-                        pass
+                    except: pass
             else:
-                print("😴 AI 判断无重大风险")
-                
+                print("😴 无重磅消息")
         except Exception as e:
-            print(f"❌ AI 监控模式出错: {e}")
+            print(f"AI 监控出错: {e}")
 
 def send_tg(content):
-    if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        print("❌ 未配置 Telegram 密钥")
-        return
+    if not TG_BOT_TOKEN or not TG_CHAT_ID: return
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
     headers = {"Content-Type": "application/json"}
     data = {"chat_id": TG_CHAT_ID, "text": content, "parse_mode": "HTML", "disable_web_page_preview": True}
-    try:
-        requests.post(url, json=data, headers=headers, timeout=10)
-    except Exception as e:
-        print(f"❌ TG 推送网络错误: {e}")
+    try: requests.post(url, json=data, headers=headers, timeout=10)
+    except: pass
 
 if __name__ == "__main__":
     mode = "daily"
-    if len(sys.argv) > 1:
-        mode = sys.argv[1]
-
-    print(f"🚀 启动脚本 | 模式: {mode} | 数据源: 东方财富")
+    if len(sys.argv) > 1: mode = sys.argv[1]
+    
+    print(f"🚀 启动 | 模式: {mode}")
     
     if mode == "daily":
+        # 日报抓取更多数据给 AI 筛选
         news = get_news(minutes_lookback=None)
         analyze_and_notify(news, mode="daily")
     elif mode == "monitor":
+        # 监控抓取最近 25 分钟
         news = get_news(minutes_lookback=25)
         analyze_and_notify(news, mode="monitor")
