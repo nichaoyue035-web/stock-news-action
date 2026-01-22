@@ -1,0 +1,31 @@
+name: Real-time Monitor
+
+on:
+  schedule:
+    # 每 20 分钟运行一次 (0, 20, 40)
+    # 这样一天会运行 72 次，不会超过 GitHub 免费额度限制
+    - cron: '*/20 * * * *'
+  workflow_dispatch:
+
+jobs:
+  check-news:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Python Setup
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+          
+      - name: Install
+        run: pip install requests openai
+        
+      - name: Run Monitor
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        # 注意这里加了参数 monitor
+        run: python main.py monitor
