@@ -134,7 +134,8 @@ def send_tg(summary, news_links):
     print(f"📡 推送结果: {resp.status_code}")
 
 if __name__ == "__main__":
-    random_wait()
+    #random_wait()
+    print("🚀 脚本启动，立即执行！")
     
     # 1. 抓新闻
     raw_news, html_news = get_news()
