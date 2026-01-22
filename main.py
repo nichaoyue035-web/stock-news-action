@@ -45,8 +45,10 @@ def get_news(minutes_lookback=None):
         now = datetime.datetime.now(SHA_TZ)
         
         if minutes_lookback:
+            # 监控模式：最近 x 分钟
             time_threshold = now - timedelta(minutes=minutes_lookback + 5)
         else:
+            # 日报模式：过去 24 小时
             time_threshold = now - timedelta(hours=24)
         
         for item in items:
@@ -70,13 +72,13 @@ def get_news(minutes_lookback=None):
             
             # 清洗HTML
             title = re.sub(r'<[^>]+>', '', title)
-            digest = re.sub(r'<[^>]+>', '', digest) # 清洗摘要
+            digest = re.sub(r'<[^>]+>', '', digest)
             
             link = item.get('url_unique') if item.get('url_unique') else "https://kuaixun.eastmoney.com/"
             
             valid_news.append({
                 "title": title,
-                "digest": digest, # 新增：把摘要也存下来给AI看
+                "digest": digest,
                 "link": link,
                 "time": news_time.strftime('%H:%M')
             })
@@ -93,48 +95,43 @@ def analyze_and_notify(news_list, mode="daily"):
 
     client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
     
-    # === 模式 A: 每日早报 (理性策略版) ===
+    # === 模式 A: 每日早报 (全面总结 + 核心主线 + 遗珠拾贝) ===
     if mode == "daily":
-        print("📝 正在进行策略推演...")
+        print("📝 正在生成全景早报...")
         
-        # 投喂更多信息：把新闻的【摘要】也给AI，让它看到细节
-        # 选取前 30 条最重要的新闻（数量稍微增加以获取更多上下文）
+        # 投喂前 40 条最有价值的新闻（增加数量以确保全面）
         news_inputs = []
-        for n in news_list[:30]:
-            # 格式：[时间] 标题 (详情: 摘要前80字...)
-            detail = n['digest'][:80] if n['digest'] else "无详情"
-            news_inputs.append(f"- {n['time']} {n['title']} (详情: {detail})")
+        for n in news_list[:40]:
+            detail = n['digest'][:100] if n['digest'] else "无详情"
+            news_inputs.append(f"- [{n['time']}] {n['title']} (内容: {detail})")
             
         news_text_block = chr(10).join(news_inputs)
 
-        # ⚡️ 核心 Prompt：去激进化 + 双主线逻辑
         prompt = f"""
-        你是一位理性的A股资深策略分析师，擅长从基本面和事件驱动角度挖掘机会。
-        这里是过去24小时的快讯：
+        你是一位视野宏大的A股投资总监。请阅读过去24小时的新闻：
         {news_text_block}
 
-        请输出一份《今日市场前瞻》，内容要求客观、逻辑清晰，避免使用“最强”、“无敌”等夸张词汇。
-
-        第一部分：【市场情绪定调】
-        用 1-2 句话客观评价当前消息面偏暖还是偏冷，并指出核心变量（如美联储、汇率、国内政策）。
-
-        第二部分：【核心机会前瞻】（重点）
-        基于消息面，推演今日值得关注的 **1-2 条核心主线**。
-        *要求*：
-        1. 如果有两条并列的强逻辑（例如“科技”和“消费”都有利好），请列出 **关注方向 A** 和 **关注方向 B**。
-        2. 如果只有一条突出的，**不要强行凑数**，只写一条即可。
+        请制作一份**高价值**的《今日盘前内参》。
         
-        输出格式：
-        📌 **关注方向**：[概念名称]
-        💡 **逻辑解析**：[这里稍微多写一点，解释清楚为什么利好，政策背景是什么，资金大概率怎么想]
-        🧬 **相关标的**：
-        - [股票A]：[简述逻辑，如：行业市占率第一]
-        - [股票B]：[简述逻辑]
-        （个股推荐保持 2-3 只具有辨识度的）
+        【第一部分：核心主线推演】(最重要，定方向)
+        从杂乱信息中提炼出 **1条** 最具爆发力的炒作主线（只写最强的1条）。
+        - 🎯 **主线题材**：[名称]
+        - 💡 **爆发逻辑**：[结合政策/事件/资金面深度解析]
+        - 🧬 **龙头前瞻**：[推荐2只最核心个股，简述理由]
 
-        (如果有第二个方向，请按同样格式列出；如果没有，则不写)
+        【第二部分：其他高价值情报】(查漏补缺，非常重要)
+        除了上述主线外，**务必列出 3-5 条** 对个股或板块有**直接利好/利空**的独立消息。
+        *筛选标准*：
+        - 某行业突发重磅利好（但未形成主线）。
+        - 某知名公司重大资产重组、业绩超预期或大订单。
+        - 关键经济数据发布。
+        *格式*：
+        🔥 **[事件名]**：[一句话解读影响]
 
-        不要使用Markdown代码块，保持文字排版整洁。
+        【第三部分：市场情绪风向】
+        用一句话总结今日多空情绪（激进/稳健/观望）。
+
+        要求：内容务实、全面，不要漏掉重要信息，也不要堆砌垃圾信息。
         """
         
         try:
@@ -145,24 +142,39 @@ def analyze_and_notify(news_list, mode="daily"):
             summary = resp.choices[0].message.content
             
             current_date = datetime.datetime.now(SHA_TZ).strftime("%m月%d日")
-            final_msg = f"<b>☕️ 市场前瞻 ({current_date})</b>\n\n{summary}\n\n<i>(本内容基于AI分析，仅供参考)</i>"
+            final_msg = f"<b>🌅 股市全景内参 ({current_date})</b>\n\n{summary}\n\n<i>(AI 辅助决策，仅供参考)</i>"
             send_tg(final_msg)
             
         except Exception as e:
             print(f"❌ AI 生成失败: {e}")
-            send_tg(f"⚠️ AI 生成出错。")
+            send_tg(f"⚠️ 早报生成出错。")
 
-    # === 模式 B: 突发监控 (保持灵敏，不变) ===
+    # === 模式 B: 突发监控 (高灵敏度版) ===
     elif mode == "monitor":
-        print("👮 监控模式...")
-        news_titles = [f"{i}. {n['title']}" for i, n in enumerate(news_list[:8])]
+        print("⚡️ 极速监控模式...")
+        # 监控只看最新的 8 条
+        news_titles = [f"{i}. {n['title']} (详情:{n['digest'][:50]})" for i, n in enumerate(news_list[:8])]
         
+        # ⚡️ 核心修改：大幅降低报警门槛，强调“即时性”和“股价波动”
         prompt = f"""
-        你是风控官。审阅快讯：
+        你是一个毫秒级的短线交易雷达。请扫描最新快讯：
         {chr(10).join(news_titles)}
-        判断是否包含【超级重磅】事件（央行动作、战争、国家级政策、巨头暴雷）。
-        有则输出：ALERT|新闻序号|一句话解读
-        无则输出：NO
+
+        【任务】：
+        判断是否有**立刻能引起股价明显波动**的消息。
+        
+        【判定标准（只要满足其一即报警）】：
+        1. ✅ **突发政策**：部委/地方政府刚刚发布的新规（如低空、地产、半导体）。
+        2. ✅ **盘中异动**：某板块突然拉升/跳水的解释性消息。
+        3. ✅ **公司大新闻**：业绩预告、中标大单、资产重组、被立案调查。
+        4. ✅ **知名小作文**：虽然未证实但市场关注度极高的传闻。
+        
+        (注意：不要只盯着央行降息这种核弹消息，任何能带来交易机会的消息都要报！)
+
+        【输出格式】：
+        ALERT|新闻序号|一句话交易提示(利好谁/利空谁/什么题材)
+        
+        如果没有，输出：NO
         """
         
         try:
@@ -179,16 +191,18 @@ def analyze_and_notify(news_list, mode="daily"):
                         index = int(parts[1])
                         comment = parts[2]
                         target_news = news_list[index]
+                        
+                        # 监控消息增加 emoji 提醒，体现紧迫感
                         msg = (
-                            f"<b>🚨 突发重大消息！</b>\n\n"
-                            f"{comment}\n\n"
-                            f"📰 {target_news['title']}\n"
+                            f"<b>⚡️ 盘中异动提醒！</b>\n\n"
+                            f"💡 {comment}\n\n"
+                            f"📰 <a href='{target_news['link']}'>{target_news['title']}</a>\n"
                             f"⏰ {target_news['time']}"
                         )
                         send_tg(msg)
                     except: pass
             else:
-                print("😴 无重磅消息")
+                print("😴 无波动机会")
         except Exception as e:
             print(f"AI 监控出错: {e}")
 
