@@ -18,12 +18,10 @@ SHA_TZ = timezone(timedelta(hours=8), 'Asia/Shanghai')
 
 def get_news(minutes_lookback=None):
     """
-    【数据源】使用东方财富 7x24 小时快讯
+    【数据源】使用东方财富 7x24 小时快讯 (抓取100条)
     """
     timestamp = int(time.time() * 1000)
-    
-    # ⚡️ 核心修改 1：把获取数量从 50 改为 100，防止漏掉被刷下去的重磅新闻
-    # URL 里的 _100_ 代表 pageSize
+    # 抓取 100 条，确保覆盖面
     url = f"https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_100_1_.html?_={timestamp}"
     
     headers = {
@@ -53,7 +51,7 @@ def get_news(minutes_lookback=None):
             # 监控模式：最近 x 分钟
             time_threshold = now - timedelta(minutes=minutes_lookback + 5)
         else:
-            # 日报模式：严格的过去 24 小时
+            # 日报模式：过去 24 小时
             time_threshold = now - timedelta(hours=24)
         
         for item in items:
@@ -78,7 +76,7 @@ def get_news(minutes_lookback=None):
             valid_news.append({
                 "title": title,
                 "link": link,
-                "time": news_time.strftime('%H:%M') # 只留时分
+                "time": news_time.strftime('%H:%M')
             })
             
         return valid_news
@@ -93,50 +91,39 @@ def analyze_and_notify(news_list, mode="daily"):
 
     client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
     
-    # === 模式 A: 每日早报 (深度筛选版) ===
+    # === 模式 A: 每日早报 (策略推演版) ===
     if mode == "daily":
-        print("📝 正在生成深度早报...")
+        print("📝 正在进行主线推演...")
         
-        # 把抓到的所有新闻标题都给 AI（只要不超 Token，越多越好，让 AI 去挑）
-        # 我们这里把 100 条里符合时间的都丢进去，大概率不会超 DeepSeek 的上下文
+        # 提取新闻文本
         news_inputs = [f"- {n['time']} {n['title']}" for n in news_list]
         news_text_block = chr(10).join(news_inputs)
 
-        # ⚡️ 核心修改 2：使用更强的“策略分析师”提示词
+        # ⚡️ 核心 Prompt：增加了【资金进攻推演】部分
         prompt = f"""
-        你是一位极其严格的A股首席策略分析师。你的客户是专业的基金经理。
-        这里是过去24小时的快讯列表：
-        
+        你是一位实战派A股游资大佬，擅长捕捉短线题材和龙头股。
+        这里是过去24小时的快讯：
         {news_text_block}
 
-        【任务目标】：
-        请从上述杂乱的信息中，**只筛选出**对今日A股走势有【实质性影响】的消息。
-        
-        【筛选标准（非常严格）】：
-        1. ✅ **宏观政策**：央行（降准/降息/MLF）、国务院、发改委发布的重磅文件。
-        2. ✅ **核心数据**：GDP、CPI、PPI、社融、PMI数据超预期/不及预期。
-        3. ✅ **行业巨震**：牵扯到万亿市值板块（如新能源、白酒、半导体、券商）的重大利好/利空。
-        4. ✅ **外部冲击**：美联储决议、汇率剧烈波动、地缘政治大事件。
-        
-        ❌ **坚决剔除**：
-        - 个股的小道消息或普通财报（除非是茅台、宁德时代这种风向标）。
-        - 分析师的口水话、普通的盘中异动播报。
-        - 没有任何增量信息的车轱辘话。
+        请输出一份《今日操盘内参》，分为两部分。
 
-        【输出格式】：
-        请生成一份《核心内参》，结构如下：
-        
-        🌐 **市场情绪定调**：(用一句话判断今日是 乐观/谨慎/恐慌，并说明核心理由)
-        
-        🔥 **必读核心事件**：
-        (这里不限制数量，有几条真正的大事就写几条。按影响力排序。如果没有大事，就写“今日无影响趋势的重大消息”。)
-        1. [事件名称] + 深度解读（一针见血指出它利好什么板块，或者利空什么）
-        2. ...
-        
-        📊 **板块资金雷达**：
-        (基于消息判断，今日哪些板块可能成为风口？哪些需要避险？)
-        
-        (注意：直接输出内容，不要使用Markdown代码块，保持排版简洁清晰)
+        第一部分：【核心大势】
+        1. 用一句话定调今日情绪（进攻/防守/震荡）。
+        2. 提炼 1-2 个影响最大的宏观或行业大事件（剔除废话）。
+
+        第二部分：【资金进攻推演】（这是重点！）
+        基于上述消息，找出今天最可能爆发的 **1 条炒作主线**。
+        必须严格按照以下格式输出：
+
+        🎯 **最强主线**：[概念名称，如：低空经济/华为海思]
+        💡 **炒作逻辑**：[一句话解释为什么今天资金会去这里]
+        🔥 **相关个股**：
+        - [股票A]：[入选理由，如：板块龙头/中标大单]
+        - [股票B]：[入选理由，如：弹性标的/技术突破]
+        （注意：个股只推荐 2-3 只最辨识度的，不要多，宁缺毋滥）
+
+        如果今天没有明确主线，请直说“今日无明显题材，建议空仓”。
+        不要使用Markdown代码块，直接输出文字。
         """
         
         try:
@@ -146,28 +133,24 @@ def analyze_and_notify(news_list, mode="daily"):
             )
             summary = resp.choices[0].message.content
             
-            # 发送早报（不再附带长长的新闻流水账链接，只看分析核心）
+            # 生成日期
             current_date = datetime.datetime.now(SHA_TZ).strftime("%m月%d日")
-            final_msg = f"<b>📅 股市核心内参 ({current_date})</b>\n\n{summary}\n\n<i>(由 AI 剔除 90% 无效噪音，仅保留关键信息)</i>"
+            final_msg = f"<b>📈 游资内参 ({current_date})</b>\n\n{summary}\n\n<i>(⚠️ 机器推演仅供参考，不构成投资建议)</i>"
             send_tg(final_msg)
             
         except Exception as e:
             print(f"❌ AI 生成失败: {e}")
             send_tg(f"⚠️ AI 罢工了，请检查日志。")
 
-    # === 模式 B: 突发监控 (逻辑保持不变，依然灵敏) ===
+    # === 模式 B: 突发监控 (保持不变) ===
     elif mode == "monitor":
         print("👮 监控模式...")
-        # 监控只看最新的 8 条
         news_titles = [f"{i}. {n['title']}" for i, n in enumerate(news_list[:8])]
         
         prompt = f"""
         你是风控官。审阅最新快讯：
         {chr(10).join(news_titles)}
-
-        判断是否包含【导致股市瞬间变盘】的超级重磅事件。
-        标准：战争、央行大动作、国家级政策、巨头暴雷。
-        
+        判断是否包含【超级重磅】事件（央行动作、战争、国家级政策、巨头暴雷）。
         有则输出：ALERT|新闻序号|一句话解读
         无则输出：NO
         """
@@ -214,10 +197,8 @@ if __name__ == "__main__":
     print(f"🚀 启动 | 模式: {mode}")
     
     if mode == "daily":
-        # 日报抓取更多数据给 AI 筛选
         news = get_news(minutes_lookback=None)
         analyze_and_notify(news, mode="daily")
     elif mode == "monitor":
-        # 监控抓取最近 25 分钟
         news = get_news(minutes_lookback=25)
         analyze_and_notify(news, mode="monitor")
