@@ -3,6 +3,7 @@ import time
 import os
 import datetime
 import sys
+import re
 from datetime import timezone, timedelta
 from openai import OpenAI
 
@@ -14,42 +15,76 @@ SHA_TZ = timezone(timedelta(hours=8), 'Asia/Shanghai')
 
 def get_news(minutes_lookback=None):
     """
-    minutes_lookback: 如果设置了数字，只抓取最近 x 分钟的新闻（用于突发监控）
-    否则抓取 24 小时（用于日报）
+    【数据源升级】使用东方财富 7x24 小时快讯
     """
-    url = "https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2509&k=&num=50&page=1"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    # 东方财富的接口，limit=50 表示一次抓50条
+    # 这里的 _ 是时间戳防缓存
+    timestamp = int(time.time() * 1000)
+    url = f"https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_50_1_.html?_={timestamp}"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://kuaixun.eastmoney.com/"
+    }
     
     try:
         resp = requests.get(url, headers=headers, timeout=10)
+        # 东方财富有时候返回的不是纯JSON，可能带var xxx=，需要清洗一下
+        # 但这个接口通常返回标准JSON，如果有问题需加清洗逻辑
         data = resp.json()
-        items = data['result']['data']
+        items = data.get('LivesList', [])
         
         valid_news = []
         now = datetime.datetime.now(SHA_TZ)
         
         # 确定时间窗口
         if minutes_lookback:
-            time_threshold = now - timedelta(minutes=minutes_lookback)
+            # 监控模式：稍微放宽一点时间窗口，防止漏抓
+            time_threshold = now - timedelta(minutes=minutes_lookback + 2)
         else:
+            # 日报模式：24小时
             time_threshold = now - timedelta(hours=24)
         
         for item in items:
-            pub_time = datetime.datetime.fromtimestamp(int(item['ctime']), SHA_TZ)
-            if pub_time < time_threshold: continue
+            # 东方财富的时间格式通常是 "2024-01-22 10:00:00"
+            show_time_str = item.get('showtime')
+            try:
+                # 它是北京时间，直接解析
+                news_time = datetime.datetime.strptime(show_time_str, "%Y-%m-%d %H:%M:%S")
+                # 赋予时区信息，否则无法和 now 比较
+                news_time = news_time.replace(tzinfo=SHA_TZ)
+            except:
+                continue
+
+            if news_time < time_threshold:
+                continue
             
-            title = item.get('rich_text', item.get('title', '')).replace('<b>','').replace('</b>','').replace('<font color="red">','').replace('</font>','')
-            link = item.get('url', '')
+            # 东方财富的 'digest' 是正文，'title' 是标题
+            # 很多快讯没有标题，只有 digest，所以优先用 digest
+            content = item.get('digest', '')
+            title = item.get('title', '')
+            
+            # 如果标题太短或为空，就用内容的前30个字当标题
+            if len(title) < 5:
+                title = content[:50] + "..." if len(content) > 50 else content
+            
+            # 简单的清洗，去掉HTML标签
+            title = re.sub(r'<[^>]+>', '', title)
+            
+            # 东方财富很多快讯没有独立链接，统一指向快讯首页
+            link = "https://kuaixun.eastmoney.com/"
+            if item.get('url_unique'):
+                link = item.get('url_unique')
             
             valid_news.append({
                 "title": title,
                 "link": link,
-                "time": pub_time.strftime('%H:%M')
+                "time": news_time.strftime('%H:%M')
             })
             
         return valid_news
     except Exception as e:
-        print(f"❌ 抓取错误: {e}")
+        print(f"❌ 东方财富抓取错误: {e}")
         return []
 
 def analyze_and_notify(news_list, mode="daily"):
@@ -59,14 +94,13 @@ def analyze_and_notify(news_list, mode="daily"):
 
     client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
     
-    # === 模式 A: 每日早报 (总结所有) ===
     if mode == "daily":
-        news_titles = [f"- {n['title']}" for n in news_list[:15]]
+        # === 日报逻辑不变 ===
+        news_titles = [f"- {n['title']}" for n in news_list[:20]] # 东财只有标题比较碎，多给点
         prompt = f"""
-        你是金融分析师。请总结以下24小时财经新闻：
+        你是金融分析师。请总结以下24小时财经快讯：
         {chr(10).join(news_titles)}
         任务：1.一句话概括情绪 2.三个核心看点 3.利好/利空板块。
-        直接输出结果，不要废话。
         """
         try:
             resp = client.chat.completions.create(
@@ -74,31 +108,28 @@ def analyze_and_notify(news_list, mode="daily"):
                 messages=[{"role": "user", "content": prompt}], stream=False
             )
             summary = resp.choices[0].message.content
-            
-            # 格式化链接列表
-            links_text = "\n".join([f"• <a href='{n['link']}'>{n['title']}</a> ({n['time']})" for n in news_list[:15]])
-            
-            send_tg(f"<b>📅 财经早报</b>\n\n{summary}\n\n<b>📰 消息源：</b>\n{links_text}")
+            links_text = "\n".join([f"• {n['title']} ({n['time']})" for n in news_list[:15]])
+            send_tg(f"<b>📅 东方财富早报</b>\n\n{summary}\n\n<b>📰 最新资讯：</b>\n{links_text}")
         except Exception as e:
             print(f"AI 错误: {e}")
 
-    # === 模式 B: 突发监控 (只找大事) ===
     elif mode == "monitor":
-        # 如果新闻太多，只看最新的5条，避免 AI 晕
-        news_titles = [f"{i}. {n['title']}" for i, n in enumerate(news_list[:5])]
+        # === 监控逻辑 ===
+        # 东财消息比较多，只取最新的 6 条给 AI 判断
+        news_titles = [f"{i}. {n['title']}" for i, n in enumerate(news_list[:6])]
         
         prompt = f"""
-        你是一个极其严格的风控官。请审阅这几条最新发生的财经新闻：
+        你是一个极其严格的风控官。请审阅这几条最新财经快讯：
         {chr(10).join(news_titles)}
 
         请判断其中是否包含【超级重磅】事件。
-        标准：只有 央行降息/加息、战争爆发、国家级政策发布、巨头(如苹果/腾讯)暴雷、股市崩盘/暴涨 才算。
-        普通的财报、股价波动、小道消息一律不算。
+        标准：只有 央行降息/加息、战争爆发/升级、国家级重磅政策、巨头暴雷/被查、股市崩盘/暴涨 才算。
+        普通的财报、盘中异动、分析师观点一律不算。
 
         如果包含重磅事件，请输出格式：
         ALERT|新闻序号|简短的一句话解读(加emoji)
         
-        如果没有重磅事件，请仅输出：NO
+        如果没有，请仅输出：NO
         """
         
         try:
@@ -109,25 +140,23 @@ def analyze_and_notify(news_list, mode="daily"):
             ai_reply = resp.choices[0].message.content.strip()
             
             if "ALERT|" in ai_reply:
-                # 解析 AI 返回的结果
-                parts = ai_reply.split("|") # ALERT|1|💥 央行宣布降准！
+                parts = ai_reply.split("|") 
                 if len(parts) >= 3:
                     try:
                         index = int(parts[1])
                         comment = parts[2]
                         target_news = news_list[index]
-                        
                         msg = (
                             f"<b>🚨 突发重大消息！</b>\n\n"
                             f"{comment}\n\n"
-                            f"📰 <a href='{target_news['link']}'>{target_news['title']}</a>\n"
-                            f"⏰ 时间: {target_news['time']}"
+                            f"📰 {target_news['title']}\n"
+                            f"⏰ 时间: {target_news['time']} (来源: 东方财富)"
                         )
                         send_tg(msg)
                     except:
                         pass
             else:
-                print("😴 AI 判断无重大新闻，继续潜伏。")
+                print("😴 AI 判断无重大新闻")
                 
         except Exception as e:
             print(f"AI 监控出错: {e}")
@@ -140,18 +169,16 @@ def send_tg(content):
     requests.post(url, json=data, headers=headers)
 
 if __name__ == "__main__":
-    # 从命令行参数读取模式，默认为 daily
     mode = "daily"
     if len(sys.argv) > 1:
         mode = sys.argv[1]
 
-    print(f"🚀 启动模式: {mode}")
+    print(f"🚀 启动模式: {mode} (源: 东方财富)")
     
     if mode == "daily":
-        # 日报模式：看24小时
         news = get_news(minutes_lookback=None)
         analyze_and_notify(news, mode="daily")
     elif mode == "monitor":
-        # 监控模式：只看最近 25 分钟 (配合 cron 20分钟一次，留5分钟余量)
-        news = get_news(minutes_lookback=25)
+        # 配合 5分钟的 cron，我们抓取过去 8 分钟的新闻，确保不漏
+        news = get_news(minutes_lookback=8)
         analyze_and_notify(news, mode="monitor")
