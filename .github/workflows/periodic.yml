@@ -1,0 +1,33 @@
+name: Periodic Summary
+
+on:
+  schedule:
+    # 计划：每 3 小时运行一次
+    # UTC 时间：0, 3, 6, 9, 12... 
+    # 对应北京时间：8:00, 11:00, 14:00, 17:00, 20:00...
+    # 刚好覆盖：盘前、午盘前、收盘前、收盘后总结
+    - cron: '0 */3 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-periodic:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Python Setup
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+          
+      - name: Install Dependencies
+        run: pip install requests openai
+        
+      - name: Run Periodic Summary
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        # 注意：这里参数是 periodic
+        run: python main.py periodic
