@@ -2,11 +2,11 @@ name: Periodic Summary
 
 on:
   schedule:
-    # 计划：每 3 小时运行一次
-    # UTC 时间：0, 3, 6, 9, 12... 
-    # 对应北京时间：8:00, 11:00, 14:00, 17:00, 20:00...
-    # 刚好覆盖：盘前、午盘前、收盘前、收盘后总结
-    - cron: '0 */3 * * *'
+    # ✅ 避开整点拥堵：改为每 3 小时的第 23 分钟运行
+    # 对应 UTC: 0:23, 3:23, 6:23, 9:23...
+    # 对应 北京: 8:23, 11:23, 14:23, 17:23, 20:23...
+    # 刚好覆盖：开盘后、午盘饭点、收盘后、晚间新闻
+    - cron: '23 */3 * * *'
   workflow_dispatch:
 
 jobs:
@@ -29,5 +29,5 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-        # 注意：这里参数是 periodic
+        # 运行 periodic 模式
         run: python main.py periodic
