@@ -45,7 +45,7 @@ def get_news(minutes_lookback=None):
         now = datetime.datetime.now(SHA_TZ)
         
         if minutes_lookback:
-            # 监控模式：最近 x 分钟
+            # 监控模式/周期模式：最近 x 分钟
             time_threshold = now - timedelta(minutes=minutes_lookback + 5)
         else:
             # 日报模式：过去 24 小时
@@ -95,16 +95,14 @@ def analyze_and_notify(news_list, mode="daily"):
 
     client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
     
-    # === 模式 A: 每日早报 (全面总结 + 核心主线 + 遗珠拾贝) ===
+    # === 模式 A: 每日早报 (全面总结) ===
     if mode == "daily":
         print("📝 正在生成全景早报...")
         
-        # 投喂前 40 条最有价值的新闻（增加数量以确保全面）
         news_inputs = []
         for n in news_list[:40]:
             detail = n['digest'][:100] if n['digest'] else "无详情"
             news_inputs.append(f"- [{n['time']}] {n['title']} (内容: {detail})")
-            
         news_text_block = chr(10).join(news_inputs)
 
         prompt = f"""
@@ -119,19 +117,14 @@ def analyze_and_notify(news_list, mode="daily"):
         - 💡 **爆发逻辑**：[结合政策/事件/资金面深度解析]
         - 🧬 **龙头前瞻**：[推荐2只最核心个股，简述理由]
 
-        【第二部分：其他高价值情报】(查漏补缺，非常重要)
-        除了上述主线外，**务必列出 3-5 条** 对个股或板块有**直接利好/利空**的独立消息。
-        *筛选标准*：
-        - 某行业突发重磅利好（但未形成主线）。
-        - 某知名公司重大资产重组、业绩超预期或大订单。
-        - 关键经济数据发布。
-        *格式*：
+        【第二部分：其他高价值情报】
+        务必列出 3-5 条对个股或板块有**直接利好/利空**的独立消息。
         🔥 **[事件名]**：[一句话解读影响]
 
         【第三部分：市场情绪风向】
-        用一句话总结今日多空情绪（激进/稳健/观望）。
+        用一句话总结今日多空情绪。
 
-        要求：内容务实、全面，不要漏掉重要信息，也不要堆砌垃圾信息。
+        要求：内容务实、全面，不要漏掉重要信息。
         """
         
         try:
@@ -149,13 +142,62 @@ def analyze_and_notify(news_list, mode="daily"):
             print(f"❌ AI 生成失败: {e}")
             send_tg(f"⚠️ 早报生成出错。")
 
-    # === 模式 B: 突发监控 (高灵敏度版) ===
+    # === 模式 B: 周期性盘中快报 (新增功能) ===
+    elif mode == "periodic":
+        print("🕒 正在生成时段简报...")
+        
+        # 1. 数量检查：如果新闻太少（少于5条），说明没啥事，直接不发
+        if len(news_list) < 5:
+            print(f"😴 新闻只有 {len(news_list)} 条，太少不值得发。")
+            return
+
+        news_inputs = []
+        # 只取前 20 条，避免信息过载
+        for n in news_list[:20]:
+            detail = n['digest'][:80] if n['digest'] else "无详情"
+            news_inputs.append(f"- [{n['time']}] {n['title']}")
+        
+        news_text_block = chr(10).join(news_inputs)
+
+        # 2. 提示词：侧重于“过去几小时发生了什么”
+        prompt = f"""
+        你是一位即时的财经新闻编辑。这是过去几小时的快讯列表：
+        {news_text_block}
+
+        请快速总结一份《盘中时段简报》。
+        
+        要求：
+        1. **不要废话**，直接列出 2-3 个值得关注的重点事件或板块异动。
+        2. 如果是一堆无聊的公告（如人事变动、小额质押），请总结为“平淡无事，无重要利好/利空”。
+        3. 格式要短小精悍，适合手机快速阅读。
+        
+        输出格式：
+        🕒 **时段重点**
+        • [事件1]：[简短影响]
+        • [事件2]：[简短影响]
+        (如果没有重要事，就写：市场消息面平静)
+        """
+        
+        try:
+            resp = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": prompt}], stream=False
+            )
+            summary = resp.choices[0].message.content
+            
+            # 如果AI觉得没啥事（根据返回内容判断），也可以选择不发，这里为了稳妥还是发出来
+            current_time = datetime.datetime.now(SHA_TZ).strftime("%H:%M")
+            final_msg = f"<b>🍵 盘中茶歇 ({current_time})</b>\n\n{summary}"
+            send_tg(final_msg)
+            
+        except Exception as e:
+            print(f"❌ AI 生成失败: {e}")
+
+    # === 模式 C: 突发监控 (高灵敏度) ===
     elif mode == "monitor":
         print("⚡️ 极速监控模式...")
-        # 监控只看最新的 8 条
         news_titles = [f"{i}. {n['title']} (详情:{n['digest'][:50]})" for i, n in enumerate(news_list[:8])]
         
-        # ⚡️ 核心修改：大幅降低报警门槛，强调“即时性”和“股价波动”
         prompt = f"""
         你是一个毫秒级的短线交易雷达。请扫描最新快讯：
         {chr(10).join(news_titles)}
@@ -164,12 +206,10 @@ def analyze_and_notify(news_list, mode="daily"):
         判断是否有**立刻能引起股价明显波动**的消息。
         
         【判定标准（只要满足其一即报警）】：
-        1. ✅ **突发政策**：部委/地方政府刚刚发布的新规（如低空、地产、半导体）。
+        1. ✅ **突发政策**：部委/地方政府刚刚发布的新规。
         2. ✅ **盘中异动**：某板块突然拉升/跳水的解释性消息。
         3. ✅ **公司大新闻**：业绩预告、中标大单、资产重组、被立案调查。
         4. ✅ **知名小作文**：虽然未证实但市场关注度极高的传闻。
-        
-        (注意：不要只盯着央行降息这种核弹消息，任何能带来交易机会的消息都要报！)
 
         【输出格式】：
         ALERT|新闻序号|一句话交易提示(利好谁/利空谁/什么题材)
@@ -192,7 +232,6 @@ def analyze_and_notify(news_list, mode="daily"):
                         comment = parts[2]
                         target_news = news_list[index]
                         
-                        # 监控消息增加 emoji 提醒，体现紧迫感
                         msg = (
                             f"<b>⚡️ 盘中异动提醒！</b>\n\n"
                             f"💡 {comment}\n\n"
@@ -226,3 +265,7 @@ if __name__ == "__main__":
     elif mode == "monitor":
         news = get_news(minutes_lookback=25)
         analyze_and_notify(news, mode="monitor")
+    elif mode == "periodic":
+        # 抓取过去 4 小时的新闻，确保覆盖定时任务的 3 小时间隔
+        news = get_news(minutes_lookback=240)
+        analyze_and_notify(news, mode="periodic")
