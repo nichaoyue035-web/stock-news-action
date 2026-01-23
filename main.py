@@ -266,6 +266,7 @@ if __name__ == "__main__":
         news = get_news(minutes_lookback=25)
         analyze_and_notify(news, mode="monitor")
     elif mode == "periodic":
-        # 抓取过去 4 小时的新闻，确保覆盖定时任务的 3 小时间隔
+        # ⏰ 设置为 240 分钟（4小时），覆盖 3 小时的运行间隔 + 1 小时缓冲
+        # 这样即使 GitHub 任务排队晚了半小时，也不会漏掉新闻
         news = get_news(minutes_lookback=240)
         analyze_and_notify(news, mode="periodic")
