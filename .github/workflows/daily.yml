@@ -2,8 +2,8 @@ name: Stock News Bot
 
 on:
   schedule:
-    # 北京时间 09:16 (UTC时间 01:16)
-    - cron: '16 1 * * *'
+    # 北京时间 07:53 (即 UTC 时间 23:53)
+    - cron: '53 23 * * *'
   workflow_dispatch:
 
 jobs:
