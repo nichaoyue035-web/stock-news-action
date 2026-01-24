@@ -146,7 +146,6 @@ def analyze_and_notify(news_list, mode="daily"):
     elif mode == "periodic":
         print("🕒 正在生成时段简报...")
         
-        # 如果新闻太少（深夜或午休），直接跳过
         if len(news_list) < 5:
             print(f"😴 新闻只有 {len(news_list)} 条，跳过不发。")
             return
@@ -182,11 +181,8 @@ def analyze_and_notify(news_list, mode="daily"):
     # === 模式 C: 突发监控 (均衡灵敏度) ===
     elif mode == "monitor":
         print("⚡️ 监控模式 (均衡灵敏度)...")
-        # 扫描最新的 15 条
         news_titles = [f"{i}. {n['title']} (详情:{n['digest'][:60]})" for i, n in enumerate(news_list[:15])]
         
-        # ⚡️ 核心 Prompt：平衡灵敏度
-        # 要求 AI 过滤掉“纯行政废话”，但对“交易相关”的消息保持敏感
         prompt = f"""
         你是一个专业的A股短线交易员。请扫描最新快讯：
         {chr(10).join(news_titles)}
@@ -221,7 +217,6 @@ def analyze_and_notify(news_list, mode="daily"):
                         parts = line.split("|") 
                         if len(parts) >= 3:
                             try:
-                                # 清理序号中的非数字字符
                                 index_str = re.sub(r'\D', '', parts[1])
                                 index = int(index_str)
                                 comment = parts[2]
@@ -243,7 +238,6 @@ def analyze_and_notify(news_list, mode="daily"):
                 if not alert_triggered:
                     print("AI 返回了 ALERT 但解析没成功，或者格式不对。")
             else:
-                # ✅ 缩进已修复：和 if "ALERT|" 对齐
                 print("😴 无交易机会")
                 
         except Exception as e:
@@ -258,6 +252,9 @@ def send_tg(content):
     except: pass
 
 if __name__ == "__main__":
+    # 👇 核心修改：程序一启动就先发个通知
+    send_tg("🚀 收到 Push！机器人代码更新并开始运行测试...")
+
     mode = "daily"
     if len(sys.argv) > 1: mode = sys.argv[1]
     
@@ -267,7 +264,7 @@ if __name__ == "__main__":
         news = get_news(minutes_lookback=None)
         analyze_and_notify(news, mode="daily")
     elif mode == "monitor":
-        # 监控过去 25 分钟（稍微冗余一点，防止漏掉边缘）
+        # 监控过去 25 分钟
         news = get_news(minutes_lookback=25)
         analyze_and_notify(news, mode="monitor")
     elif mode == "periodic":
