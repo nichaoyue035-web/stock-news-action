@@ -1,0 +1,31 @@
+name: Market Fund Flow
+
+on:
+  schedule:
+    # UTC 07:03 = 北京时间 15:03 (收盘后3分钟)
+    # 周一到周五运行 (1-5)
+    - cron: '3 7 * * 1-5'
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  check-funds:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Python Setup
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+          
+      - name: Install
+        run: pip install requests openai
+        
+      - name: Run Funds Analysis
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        # 运行 funds 模式
+        run: python main.py funds
