@@ -1,22 +1,15 @@
 name: Real-time Monitor
 
 on:
-  # 1. 允许手动点击按钮触发
   workflow_dispatch:
-  
-  # 2. 每次推送到 main 分支时触发 (方便测试)
   push:
     branches: [ main ]
-    
-  # 3. 定时触发 (每 20 分钟)
   schedule:
     - cron: '*/20 * * * *'
 
 jobs:
   check-news:
     runs-on: ubuntu-latest
-    
-    # 设置权限，防止某些情况下的 token 问题
     permissions:
       contents: read
       
@@ -28,7 +21,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.9'
-          cache: 'pip' # 开启缓存，加快运行速度
+          # 👇 删除了 cache: 'pip' 这一行，不再需要 requirements.txt
           
       - name: Install Dependencies
         run: pip install requests openai
@@ -38,5 +31,4 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-        # 核心命令：运行 monitor 模式
         run: python main.py monitor
