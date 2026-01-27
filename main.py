@@ -153,7 +153,7 @@ def analyze_and_notify(mode="daily"):
             except Exception as e:
                 print(f"❌ Daily 模式执行失败: {e}")
 
-elif mode == "monitor":
+        elif mode == "monitor":
             # 1. 准备待分析的新闻列表
             news_titles = [f"{i}. {n['title']} (详情:{n['digest'][:60]})" for i, n in enumerate(news[:15])]
             
@@ -181,17 +181,14 @@ elif mode == "monitor":
                                 idx = int(idx_str)
                                 if idx < len(news):
                                     t = news[idx]
-                                    # 组装单条内容：加入 Emoji 和 AI 分析
-                                    # 格式：💡 分析... \n 📰 标题 (时间)
+                                    # 组装单条内容
                                     item_str = f"💡 <b>逻辑</b>：{parts[2]}\n📰 <a href='{t['link']}'>{t['title']}</a> ({t['time']})"
                                     alerts_buffer.append(item_str)
                 
                 # === 核心修改：如果有内容，合并成一条发送 ===
                 if alerts_buffer:
-                    # 使用分割线连接多条消息
                     final_msg = "<b>🚨 机会雷达汇总</b>\n\n" + "\n\n〰️〰️〰️〰️〰️\n\n".join(alerts_buffer)
                     send_tg(final_msg)
-                # === 修改结束 ===
 
             except Exception as e:
                 print(f"❌ Monitor 模式执行失败: {e}")
