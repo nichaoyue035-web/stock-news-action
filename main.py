@@ -26,6 +26,7 @@ def get_news(minutes_lookback=None):
         "Accept": "*/*"
     }
     try:
+        print(f"🔍 正在抓取新闻 (回溯 {minutes_lookback if minutes_lookback else 1440} 分钟)...")
         resp = requests.get(url, headers=headers, timeout=15)
         content = resp.text.strip()
         if content.startswith("var "): content = content.split("=", 1)[1].strip()
@@ -37,7 +38,8 @@ def get_news(minutes_lookback=None):
         now = datetime.datetime.now(SHA_TZ)
         
         if minutes_lookback:
-            time_threshold = now - timedelta(minutes=minutes_lookback + 5)
+            # 修正：这里不再加额外的 5 分钟，保持逻辑清晰，由外部控制
+            time_threshold = now - timedelta(minutes=minutes_lookback)
         else:
             time_threshold = now - timedelta(hours=24)
         
@@ -56,6 +58,8 @@ def get_news(minutes_lookback=None):
             link = item.get('url_unique') if item.get('url_unique') else "https://kuaixun.eastmoney.com/"
             
             valid_news.append({"title": title, "digest": re.sub(r'<[^>]+>', '', digest), "link": link, "time": news_time.strftime('%H:%M')})
+        
+        print(f"✅ 抓取成功，符合时间范围的新闻共 {len(valid_news)} 条")
         return valid_news
     except Exception as e:
         print(f"❌ 新闻抓取失败: {e}")
@@ -63,6 +67,7 @@ def get_news(minutes_lookback=None):
 
 def get_market_funds():
     """获取东方财富-行业板块资金流向 (主力净流入)"""
+    print("🔍 正在抓取资金流向数据...")
     url = "https://push2.eastmoney.com/api/qt/clist/get"
     params = {
         "pn": "1", "pz": "200", "po": "1", "np": "1", 
@@ -101,12 +106,15 @@ def analyze_and_notify(mode="daily"):
         return
 
     client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
+    print(f"🤖 AI 客户端已就绪，准备执行模式: [{mode}]")
     
     # === 模式: 资金流向分析 ===
     if mode == "funds":
         print("💰 正在分析主力资金流向...")
         top_in, top_out = get_market_funds()
-        if not top_in: return
+        if not top_in: 
+            print("⚠️ 未获取到资金数据，跳过")
+            return
         
         in_str = "\n".join([f"- {s['name']}: 净流入 {s['flow']}亿 (涨跌 {s['change']})" for s in top_in])
         out_str = "\n".join([f"- {s['name']}: 净流出 {s['flow']}亿 (涨跌 {s['change']})" for s in top_out])
@@ -119,18 +127,21 @@ def analyze_and_notify(mode="daily"):
             current_date = datetime.datetime.now(SHA_TZ).strftime("%m月%d日")
             send_tg(f"<b>💰 主力资金雷达 ({current_date})</b>\n\n{summary}")
         except Exception as e:
-            print(f"AI 分析失败: {e}")
+            print(f"❌ AI 分析资金流失败: {e}")
 
     # === 其他模式 (新闻类) ===
     else:
+        # ⚠️ 关键修改：放大 Monitor 模式的时间窗口，防止 GitHub 调度延迟导致漏单
         if mode == "daily": news = get_news(None)
-        elif mode == "monitor": news = get_news(25)
+        elif mode == "monitor": news = get_news(60) # 改为 60 分钟，覆盖延迟
         elif mode == "periodic": news = get_news(240)
         elif mode == "after_market": news = get_news(240)
-        else: return
+        else: 
+            print(f"❌ 未知模式: {mode}")
+            return
         
         if not news:
-            print(f"📭 模式 {mode} 下无符合条件的新闻")
+            print(f"📭 模式 {mode} 下无符合条件的新闻 (这可能是正常的，但也可能是抓取被拦截)")
             return
 
         if mode == "daily":
@@ -139,14 +150,22 @@ def analyze_and_notify(mode="daily"):
             try:
                 resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}])
                 send_tg(f"<b>🌅 股市全景内参</b>\n\n{resp.choices[0].message.content}")
-            except: pass
+            except Exception as e:
+                print(f"❌ Daily 模式执行失败: {e}")
 
         elif mode == "monitor":
             news_titles = [f"{i}. {n['title']} (详情:{n['digest'][:60]})" for i, n in enumerate(news[:15])]
             prompt = f"你是短线交易员。筛选有价值的快讯：\n{chr(10).join(news_titles)}\n输出格式：ALERT|序号|点评"
             try:
+                print("🧠 AI 正在筛选 Monitor 消息...")
                 resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}])
-                for line in resp.choices[0].message.content.split('\n'):
+                content = resp.choices[0].message.content
+                print(f"🤖 AI 原始回复: {content}") # 打印 AI 回复，方便 Debug
+
+                if "ALERT|" not in content:
+                    print("⚠️ AI 认为当前无重要机会，未触发推送")
+
+                for line in content.split('\n'):
                     if "ALERT|" in line:
                         parts = line.split("|")
                         if len(parts) >= 3:
@@ -156,7 +175,8 @@ def analyze_and_notify(mode="daily"):
                                 if idx < len(news):
                                     t = news[idx]
                                     send_tg(f"<b>🚨 机会雷达</b>\n\n💡 {parts[2]}\n\n📰 <a href='{t['link']}'>{t['title']}</a>\n⏰ {t['time']}")
-            except: pass
+            except Exception as e:
+                print(f"❌ Monitor 模式执行失败: {e}")
 
         elif mode == "after_market":
             news_txt = "\n".join([f"- {n['title']}" for n in news[:35]])
@@ -164,7 +184,8 @@ def analyze_and_notify(mode="daily"):
             try:
                 resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}])
                 send_tg(f"<b>🌇 每日复盘</b>\n\n{resp.choices[0].message.content}")
-            except: pass
+            except Exception as e:
+                print(f"❌ After Market 模式执行失败: {e}")
             
         elif mode == "periodic":
             news_txt = "\n".join([f"- {n['title']}" for n in news[:20]])
@@ -172,7 +193,8 @@ def analyze_and_notify(mode="daily"):
             try:
                 resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}])
                 send_tg(f"<b>🍵 盘中茶歇</b>\n\n{resp.choices[0].message.content}")
-            except: pass
+            except Exception as e:
+                print(f"❌ Periodic 模式执行失败: {e}")
 
 def send_tg(content):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
@@ -184,6 +206,8 @@ def send_tg(content):
         r = requests.post(url, json=data, timeout=10)
         if r.status_code != 200:
             print(f"❌ TG 发送失败: {r.text}")
+        else:
+            print("✅ TG 消息发送成功")
     except Exception as e:
         print(f"❌ TG 请求异常: {e}")
 
@@ -191,11 +215,14 @@ if __name__ == "__main__":
     # 获取运行模式，默认为 daily
     mode = "daily"
     if len(sys.argv) > 1:
-        mode = sys.argv[1] # 👈 关键修复：取参数列表的第一个参数
+        mode = sys.argv[1]
     
     print(f"🚀 正在以 [{mode}] 模式启动脚本...")
     
-    # 如果是推送或手动触发 monitor，先发一个启动通知（可选）
+    # 增加心跳显示，确保日志里能看到
+    print(f"🕒 系统时间 (UTC): {datetime.datetime.utcnow()}")
+    print(f"🕒 系统时间 (北京): {datetime.datetime.now(SHA_TZ)}")
+
     if mode == "monitor" and os.getenv("GITHUB_EVENT_NAME") == "push":
         send_tg("系统通知：代码已更新，监控任务启动中...")
 
