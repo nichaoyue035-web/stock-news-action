@@ -38,7 +38,6 @@ def get_news(minutes_lookback=None):
         now = datetime.datetime.now(SHA_TZ)
         
         if minutes_lookback:
-            # 修正：这里不再加额外的 5 分钟，保持逻辑清晰，由外部控制
             time_threshold = now - timedelta(minutes=minutes_lookback)
         else:
             time_threshold = now - timedelta(hours=24)
@@ -131,9 +130,8 @@ def analyze_and_notify(mode="daily"):
 
     # === 其他模式 (新闻类) ===
     else:
-        # ⚠️ 关键修改：放大 Monitor 模式的时间窗口，防止 GitHub 调度延迟导致漏单
         if mode == "daily": news = get_news(None)
-        elif mode == "monitor": news = get_news(60) # 改为 60 分钟，覆盖延迟
+        elif mode == "monitor": news = get_news(60)
         elif mode == "periodic": news = get_news(240)
         elif mode == "after_market": news = get_news(240)
         else: 
@@ -141,7 +139,7 @@ def analyze_and_notify(mode="daily"):
             return
         
         if not news:
-            print(f"📭 模式 {mode} 下无符合条件的新闻 (这可能是正常的，但也可能是抓取被拦截)")
+            print(f"📭 模式 {mode} 下无符合条件的新闻")
             return
 
         if mode == "daily":
@@ -157,7 +155,7 @@ def analyze_and_notify(mode="daily"):
             # 1. 准备待分析的新闻列表
             news_titles = [f"{i}. {n['title']} (详情:{n['digest'][:60]})" for i, n in enumerate(news[:15])]
             
-            # 2. 优化 Prompt：明确要求筛选并给出逻辑分析
+            # 2. 优化 Prompt
             prompt = f"你是短线交易员。请浏览以下快讯，筛选出具有【即时交易价值】或【重要市场影响】的消息。\n列表：\n{chr(10).join(news_titles)}\n\n要求：\n1. 宁缺毋滥，只选重要的。\n2. 对每一条筛选出的消息，给出一句简短深刻的逻辑分析（利好谁？利空谁？预期多大？）。\n3. 严格按格式输出（每条一行）：ALERT|序号|逻辑分析"
             
             try:
@@ -166,7 +164,7 @@ def analyze_and_notify(mode="daily"):
                 content = resp.choices[0].message.content
                 print(f"🤖 AI 原始回复: {content}") 
 
-                # === 修改开始：不再逐条发送，而是先收集 ===
+                # === 修改开始：合并发送逻辑 ===
                 alerts_buffer = [] 
 
                 if "ALERT|" not in content:
@@ -176,7 +174,7 @@ def analyze_and_notify(mode="daily"):
                     if "ALERT|" in line:
                         parts = line.split("|")
                         if len(parts) >= 3:
-                            idx_str = re.sub(r'\D', '', parts[1]) # 提取序号
+                            idx_str = re.sub(r'\D', '', parts[1])
                             if idx_str:
                                 idx = int(idx_str)
                                 if idx < len(news):
@@ -187,7 +185,8 @@ def analyze_and_notify(mode="daily"):
                 
                 # === 核心修改：如果有内容，合并成一条发送 ===
                 if alerts_buffer:
-                    final_msg = "<b>🚨 机会雷达汇总</b>\n\n" + "\n\n〰️〰️〰️〰️〰️\n\n".join(alerts_buffer)
+                    # 👇 这里把图标换成了 🎯
+                    final_msg = "<b>🎯 机会雷达汇总</b>\n\n" + "\n\n〰️〰️〰️〰️〰️\n\n".join(alerts_buffer)
                     send_tg(final_msg)
 
             except Exception as e:
@@ -227,14 +226,11 @@ def send_tg(content):
         print(f"❌ TG 请求异常: {e}")
 
 if __name__ == "__main__":
-    # 获取运行模式，默认为 daily
     mode = "daily"
     if len(sys.argv) > 1:
         mode = sys.argv[1]
     
     print(f"🚀 正在以 [{mode}] 模式启动脚本...")
-    
-    # 增加心跳显示，确保日志里能看到
     print(f"🕒 系统时间 (UTC): {datetime.datetime.utcnow()}")
     print(f"🕒 系统时间 (北京): {datetime.datetime.now(SHA_TZ)}")
 
