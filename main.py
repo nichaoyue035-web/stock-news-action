@@ -153,28 +153,46 @@ def analyze_and_notify(mode="daily"):
             except Exception as e:
                 print(f"❌ Daily 模式执行失败: {e}")
 
-        elif mode == "monitor":
+elif mode == "monitor":
+            # 1. 准备待分析的新闻列表
             news_titles = [f"{i}. {n['title']} (详情:{n['digest'][:60]})" for i, n in enumerate(news[:15])]
-            prompt = f"你是短线交易员。筛选有价值的快讯：\n{chr(10).join(news_titles)}\n输出格式：ALERT|序号|点评"
+            
+            # 2. 优化 Prompt：明确要求筛选并给出逻辑分析
+            prompt = f"你是短线交易员。请浏览以下快讯，筛选出具有【即时交易价值】或【重要市场影响】的消息。\n列表：\n{chr(10).join(news_titles)}\n\n要求：\n1. 宁缺毋滥，只选重要的。\n2. 对每一条筛选出的消息，给出一句简短深刻的逻辑分析（利好谁？利空谁？预期多大？）。\n3. 严格按格式输出（每条一行）：ALERT|序号|逻辑分析"
+            
             try:
                 print("🧠 AI 正在筛选 Monitor 消息...")
                 resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}])
                 content = resp.choices[0].message.content
-                print(f"🤖 AI 原始回复: {content}") # 打印 AI 回复，方便 Debug
+                print(f"🤖 AI 原始回复: {content}") 
+
+                # === 修改开始：不再逐条发送，而是先收集 ===
+                alerts_buffer = [] 
 
                 if "ALERT|" not in content:
                     print("⚠️ AI 认为当前无重要机会，未触发推送")
-
+                
                 for line in content.split('\n'):
                     if "ALERT|" in line:
                         parts = line.split("|")
                         if len(parts) >= 3:
-                            idx_str = re.sub(r'\D', '', parts[1])
+                            idx_str = re.sub(r'\D', '', parts[1]) # 提取序号
                             if idx_str:
                                 idx = int(idx_str)
                                 if idx < len(news):
                                     t = news[idx]
-                                    send_tg(f"<b>🚨 机会雷达</b>\n\n💡 {parts[2]}\n\n📰 <a href='{t['link']}'>{t['title']}</a>\n⏰ {t['time']}")
+                                    # 组装单条内容：加入 Emoji 和 AI 分析
+                                    # 格式：💡 分析... \n 📰 标题 (时间)
+                                    item_str = f"💡 <b>逻辑</b>：{parts[2]}\n📰 <a href='{t['link']}'>{t['title']}</a> ({t['time']})"
+                                    alerts_buffer.append(item_str)
+                
+                # === 核心修改：如果有内容，合并成一条发送 ===
+                if alerts_buffer:
+                    # 使用分割线连接多条消息
+                    final_msg = "<b>🚨 机会雷达汇总</b>\n\n" + "\n\n〰️〰️〰️〰️〰️\n\n".join(alerts_buffer)
+                    send_tg(final_msg)
+                # === 修改结束 ===
+
             except Exception as e:
                 print(f"❌ Monitor 模式执行失败: {e}")
 
