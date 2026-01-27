@@ -5,6 +5,7 @@ import datetime
 import sys
 import re
 import json
+import random
 from datetime import timezone, timedelta
 from openai import OpenAI
 
@@ -45,23 +46,39 @@ def load_prompts():
         print(f"⚠️ 加载 prompts.json 失败: {e}，将使用内置默认值")
     return DEFAULT_PROMPTS
 
+def get_random_header():
+    """随机获取一个请求头，伪装身份"""
+    return {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Referer": "https://kuaixun.eastmoney.com/",
+        "Accept": "*/*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
+    }
+
 def get_news(minutes_lookback=None):
-    """获取东方财富 7x24 快讯"""
+    """获取东方财富 7x24 快讯 (增强防御版)"""
     timestamp = int(time.time() * 1000)
     url = f"https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_100_1_.html?_={timestamp}"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": "https://kuaixun.eastmoney.com/",
-        "Accept": "*/*"
-    }
+    
     try:
         print(f"🔍 正在抓取新闻 (回溯 {minutes_lookback if minutes_lookback else 1440} 分钟)...")
-        resp = requests.get(url, headers=headers, timeout=15)
-        content = resp.text.strip()
-        if content.startswith("var "): content = content.split("=", 1)[1].strip()
-        if content.endswith(";"): content = content[:-1]
+        # ✅ 修正点：这里调用了 get_random_header()
+        resp = requests.get(url, headers=get_random_header(), timeout=15)
         
-        data = json.loads(content)
+        # === 🛡️ 核心改进：智能解析 JSON ===
+        content = resp.text.strip()
+        # ✅ 修正点：不再用 split，而是自动寻找 JSON 边界
+        start_idx = content.find('{')
+        end_idx = content.rfind('}')
+        
+        if start_idx != -1 and end_idx != -1:
+            json_str = content[start_idx : end_idx + 1]
+            data = json.loads(json_str)
+        else:
+            print("⚠️ 警告: 无法从响应中提取 JSON 数据，接口格式可能已变更")
+            return []
+        # ================================
+        
         items = data.get('LivesList', [])
         valid_news = []
         now = datetime.datetime.now(SHA_TZ)
@@ -85,7 +102,6 @@ def get_news(minutes_lookback=None):
             title = re.sub(r'<[^>]+>', '', title)
             link = item.get('url_unique') if item.get('url_unique') else "https://kuaixun.eastmoney.com/"
             
-            # 存入 datetime 对象以便后续计算
             valid_news.append({
                 "title": title, 
                 "digest": re.sub(r'<[^>]+>', '', digest), 
@@ -101,7 +117,7 @@ def get_news(minutes_lookback=None):
         return []
 
 def get_market_funds():
-    """获取资金流向"""
+    """获取资金流向 (增强防御版)"""
     print("🔍 正在抓取资金流向数据...")
     url = "https://push2.eastmoney.com/api/qt/clist/get"
     params = {
@@ -111,7 +127,8 @@ def get_market_funds():
         "fields": "f12,f14,f2,f3,f62" 
     }
     try:
-        resp = requests.get(url, params=params, timeout=10)
+        # ✅ 修正点：这里也加了 header 伪装
+        resp = requests.get(url, headers=get_random_header(), params=params, timeout=10)
         data = resp.json().get('data', {}).get('diff', [])
         
         sectors = []
@@ -145,7 +162,7 @@ def analyze_and_notify(mode="daily"):
     
     PROMPTS = load_prompts()
     
-    # 1. 资金流模式 (Workflow已限制周一至周五，这里双重保险)
+    # 1. 资金流模式
     if mode == "funds":
         if is_weekend:
             print("😴 周末休市，资金流模式跳过")
@@ -162,7 +179,7 @@ def analyze_and_notify(mode="daily"):
             send_tg(f"<b>💰 主力资金雷达 ({now.strftime('%m-%d')})</b>\n\n{resp.choices[0].message.content}")
         except Exception as e: print(f"❌ Funds Error: {e}")
 
-    # 2. 日报模式 (周末跳过)
+    # 2. 日报模式
     elif mode == "daily":
         if is_weekend:
             print("😴 周末休市，Daily 日报模式跳过")
@@ -178,17 +195,15 @@ def analyze_and_notify(mode="daily"):
             send_tg(f"<b>🌅 股市全景内参</b>\n\n{resp.choices[0].message.content}")
         except Exception as e: print(f"❌ Daily Error: {e}")
 
-    # 3. 监控模式 (周末跳过)
+    # 3. 监控模式
     elif mode == "monitor":
         if is_weekend:
             print("😴 周末休市，Monitor 监控模式跳过")
             return
 
-        # 抓取过去 60 分钟以防漏单，但筛选时只处理最近 25 分钟，防止重复推送
         news = get_news(60)
         if not news: return
         
-        # ⚡️ 简单去重逻辑：只保留最近 25 分钟内的新闻
         recent_threshold = now - timedelta(minutes=25)
         fresh_news = [n for n in news if n['datetime'] > recent_threshold]
         
@@ -221,19 +236,13 @@ def analyze_and_notify(mode="daily"):
                 send_tg("<b>🎯 机会雷达汇总</b>\n\n" + "\n\n〰️〰️〰️〰️〰️\n\n".join(alerts_buffer))
         except Exception as e: print(f"❌ Monitor Error: {e}")
 
-    # 4. 周期模式 / 周末模式 (周末保留)
+    # 4. 周期模式 / 周末模式
     elif mode == "periodic":
-        # 即使是 Periodic 模式，也不要发半夜的消息 (例如 00:00 - 07:00 不打扰)
-        # if 0 <= now.hour < 7:
-        #     print("🌙 深夜勿扰模式，Periodic 跳过")
-        #     return
-        
-        news = get_news(240) # 回溯 4 小时
+        news = get_news(240) 
         if not news: return
         news_txt = "\n".join([f"- {n['title']}" for n in news[:20]])
         prompt = PROMPTS["periodic"].format(news_txt=news_txt)
         
-        # 动态标题：周末叫“周末要闻”，平时叫“盘中茶歇”
         title = "🌴 周末要闻" if is_weekend else "🍵 盘中茶歇"
         
         try:
@@ -242,7 +251,6 @@ def analyze_and_notify(mode="daily"):
         except Exception as e: print(f"❌ Periodic Error: {e}")
 
     elif mode == "after_market":
-        # Workflow 已限制 1-5，这里不做额外周末判断，防止手动运行无效
         news = get_news(240)
         if not news: return
         news_txt = "\n".join([f"- {n['title']}" for n in news[:35]])
