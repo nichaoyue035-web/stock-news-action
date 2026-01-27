@@ -14,7 +14,7 @@ TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 SHA_TZ = timezone(timedelta(hours=8), 'Asia/Shanghai')
 
-# 默认 Prompt 备份（防止 JSON 文件读取失败时程序崩溃）
+# 默认 Prompt 备份
 DEFAULT_PROMPTS = {
     "daily": "你是投资总监。基于新闻生成《今日盘前内参》：\n{news_txt}\n\n1.核心主线\n2.利好/利空\n3.情绪判断",
     "monitor": "你是短线交易员。请浏览以下快讯，筛选出具有【即时交易价值】或【重要市场影响】的消息。\n列表：\n{news_list}\n\n要求：\n1. 宁缺毋滥，只选重要的。\n2. 对每一条筛选出的消息，给出一句简短深刻的逻辑分析（利好谁？利空谁？预期多大？）。\n3. 严格按格式输出（每条一行）：ALERT|序号|逻辑分析",
@@ -24,6 +24,17 @@ DEFAULT_PROMPTS = {
 }
 
 # === 2. 功能函数 ===
+
+def load_prompts():
+    """尝试从 prompts.json 加载提示词"""
+    try:
+        if os.path.exists("prompts.json"):
+            with open("prompts.json", "r", encoding="utf-8") as f:
+                print("✅ 成功加载外部提示词配置 (prompts.json)")
+                return json.load(f)
+    except Exception as e:
+        print(f"⚠️ 加载 prompts.json 失败: {e}，将使用内置默认值")
+    return DEFAULT_PROMPTS
 
 def get_news(minutes_lookback=None):
     """获取东方财富 7x24 快讯"""
@@ -65,7 +76,14 @@ def get_news(minutes_lookback=None):
             title = re.sub(r'<[^>]+>', '', title)
             link = item.get('url_unique') if item.get('url_unique') else "https://kuaixun.eastmoney.com/"
             
-            valid_news.append({"title": title, "digest": re.sub(r'<[^>]+>', '', digest), "link": link, "time": news_time.strftime('%H:%M')})
+            # 存入 datetime 对象以便后续计算
+            valid_news.append({
+                "title": title, 
+                "digest": re.sub(r'<[^>]+>', '', digest), 
+                "link": link, 
+                "time_str": news_time.strftime('%H:%M'),
+                "datetime": news_time 
+            })
         
         print(f"✅ 抓取成功，符合时间范围的新闻共 {len(valid_news)} 条")
         return valid_news
@@ -74,7 +92,7 @@ def get_news(minutes_lookback=None):
         return []
 
 def get_market_funds():
-    """获取东方财富-行业板块资金流向 (主力净流入)"""
+    """获取资金流向"""
     print("🔍 正在抓取资金流向数据...")
     url = "https://push2.eastmoney.com/api/qt/clist/get"
     params = {
@@ -99,151 +117,140 @@ def get_market_funds():
             })
             
         sectors.sort(key=lambda x: x['flow'], reverse=True)
-        top_in = sectors[:8]
-        top_out = sectors[-8:]
-        top_out.sort(key=lambda x: x['flow']) 
-        
-        return top_in, top_out
+        return sectors[:8], sectors[-8:] # Top In, Top Out
     except Exception as e:
         print(f"❌ 资金流抓取失败: {e}")
         return [], []
 
 def analyze_and_notify(mode="daily"):
     if not DEEPSEEK_API_KEY:
-        print("❌ 错误: 未设置 DEEPSEEK_API_KEY 环境参数")
+        print("❌ 错误: 未设置 DEEPSEEK_API_KEY")
         return
 
     client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
-    print(f"🤖 AI 客户端已就绪，准备执行模式: [{mode}]")
     
-    # === 模式: 资金流向分析 ===
+    # === 周末判断逻辑 ===
+    now = datetime.datetime.now(SHA_TZ)
+    is_weekend = now.weekday() >= 5  # 5=周六, 6=周日
+    print(f"🤖 启动模式: [{mode}] | 当前时间: {now.strftime('%A %H:%M')} | 周末: {is_weekend}")
+    
+    PROMPTS = load_prompts()
+    
+    # 1. 资金流模式 (Workflow已限制周一至周五，这里双重保险)
     if mode == "funds":
-        print("💰 正在分析主力资金流向...")
-        top_in, top_out = get_market_funds()
-        if not top_in: 
-            print("⚠️ 未获取到资金数据，跳过")
+        if is_weekend:
+            print("😴 周末休市，资金流模式跳过")
             return
+        top_in, top_out = get_market_funds()
+        if not top_in: return
         
-        in_str = "\n".join([f"- {s['name']}: 净流入 {s['flow']}亿 (涨跌 {s['change']})" for s in top_in])
-        out_str = "\n".join([f"- {s['name']}: 净流出 {s['flow']}亿 (涨跌 {s['change']})" for s in top_out])
-        
-        prompt = f"你是一位资深A股分析师。这是今日行业资金数据：\n\n主力抢筹：\n{in_str}\n\n主力抛售：\n{out_str}\n\n请分析核心风口、避险板块并给出明日态度。"
+        in_str = "\n".join([f"- {s['name']}: {s['flow']}亿 ({s['change']})" for s in top_in])
+        out_str = "\n".join([f"- {s['name']}: {s['flow']}亿 ({s['change']})" for s in top_out])
+        prompt = PROMPTS["funds"].format(in_str=in_str, out_str=out_str)
         
         try:
             resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}])
-            summary = resp.choices[0].message.content
-            current_date = datetime.datetime.now(SHA_TZ).strftime("%m月%d日")
-            send_tg(f"<b>💰 主力资金雷达 ({current_date})</b>\n\n{summary}")
-        except Exception as e:
-            print(f"❌ AI 分析资金流失败: {e}")
+            send_tg(f"<b>💰 主力资金雷达 ({now.strftime('%m-%d')})</b>\n\n{resp.choices[0].message.content}")
+        except Exception as e: print(f"❌ Funds Error: {e}")
 
-    # === 其他模式 (新闻类) ===
-    else:
-        if mode == "daily": news = get_news(None)
-        elif mode == "monitor": news = get_news(60)
-        elif mode == "periodic": news = get_news(240)
-        elif mode == "after_market": news = get_news(240)
-        else: 
-            print(f"❌ 未知模式: {mode}")
+    # 2. 日报模式 (周末跳过)
+    elif mode == "daily":
+        if is_weekend:
+            print("😴 周末休市，Daily 日报模式跳过")
             return
+            
+        news = get_news(None)
+        if not news: return
+        news_txt = "\n".join([f"- {n['title']}" for n in news[:40]])
+        prompt = PROMPTS["daily"].format(news_txt=news_txt)
         
-        if not news:
-            print(f"📭 模式 {mode} 下无符合条件的新闻")
+        try:
+            resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}])
+            send_tg(f"<b>🌅 股市全景内参</b>\n\n{resp.choices[0].message.content}")
+        except Exception as e: print(f"❌ Daily Error: {e}")
+
+    # 3. 监控模式 (周末跳过)
+    elif mode == "monitor":
+        if is_weekend:
+            print("😴 周末休市，Monitor 监控模式跳过")
             return
 
-        if mode == "daily":
-            news_txt = "\n".join([f"- {n['title']}" for n in news[:40]])
-            prompt = f"你是投资总监。基于新闻生成《今日盘前内参》：\n{news_txt}\n\n1.核心主线\n2.利好/利空\n3.情绪判断"
-            try:
-                resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}])
-                send_tg(f"<b>🌅 股市全景内参</b>\n\n{resp.choices[0].message.content}")
-            except Exception as e:
-                print(f"❌ Daily 模式执行失败: {e}")
+        # 抓取过去 60 分钟以防漏单，但筛选时只处理最近 25 分钟，防止重复推送
+        news = get_news(60)
+        if not news: return
+        
+        # ⚡️ 简单去重逻辑：只保留最近 25 分钟内的新闻
+        recent_threshold = now - timedelta(minutes=25)
+        fresh_news = [n for n in news if n['datetime'] > recent_threshold]
+        
+        if not fresh_news:
+            print("📭 无 25 分钟内的新增消息，跳过推送")
+            return
 
-        elif mode == "monitor":
-            # 1. 准备待分析的新闻列表
-            news_titles = [f"{i}. {n['title']} (详情:{n['digest'][:60]})" for i, n in enumerate(news[:15])]
+        news_titles = [f"{i}. {n['title']} (详情:{n['digest'][:60]})" for i, n in enumerate(fresh_news[:15])]
+        prompt = PROMPTS["monitor"].format(news_list="\n".join(news_titles))
+        
+        try:
+            print(f"🧠 AI 正在分析 {len(fresh_news)} 条最新消息...")
+            resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}])
+            content = resp.choices[0].message.content
             
-            # 2. 优化 Prompt
-            prompt = f"你是短线交易员。请浏览以下快讯，筛选出具有【即时交易价值】或【重要市场影响】的消息。\n列表：\n{chr(10).join(news_titles)}\n\n要求：\n1. 宁缺毋滥，只选重要的。\n2. 对每一条筛选出的消息，给出一句简短深刻的逻辑分析（利好谁？利空谁？预期多大？）。\n3. 严格按格式输出（每条一行）：ALERT|序号|逻辑分析"
+            alerts_buffer = []
+            for line in content.split('\n'):
+                if "ALERT|" in line:
+                    parts = line.split("|")
+                    if len(parts) >= 3:
+                        idx_str = re.sub(r'\D', '', parts[1])
+                        if idx_str:
+                            idx = int(idx_str)
+                            if idx < len(fresh_news):
+                                t = fresh_news[idx]
+                                item_str = f"💡 <b>逻辑</b>：{parts[2]}\n📰 <a href='{t['link']}'>{t['title']}</a> ({t['time_str']})"
+                                alerts_buffer.append(item_str)
             
-            try:
-                print("🧠 AI 正在筛选 Monitor 消息...")
-                resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}])
-                content = resp.choices[0].message.content
-                print(f"🤖 AI 原始回复: {content}") 
+            if alerts_buffer:
+                send_tg("<b>🎯 机会雷达汇总</b>\n\n" + "\n\n〰️〰️〰️〰️〰️\n\n".join(alerts_buffer))
+        except Exception as e: print(f"❌ Monitor Error: {e}")
 
-                # === 修改开始：合并发送逻辑 ===
-                alerts_buffer = [] 
+    # 4. 周期模式 / 周末模式 (周末保留)
+    elif mode == "periodic":
+        # 即使是 Periodic 模式，也不要发半夜的消息 (例如 00:00 - 07:00 不打扰)
+        # if 0 <= now.hour < 7:
+        #     print("🌙 深夜勿扰模式，Periodic 跳过")
+        #     return
+        
+        news = get_news(240) # 回溯 4 小时
+        if not news: return
+        news_txt = "\n".join([f"- {n['title']}" for n in news[:20]])
+        prompt = PROMPTS["periodic"].format(news_txt=news_txt)
+        
+        # 动态标题：周末叫“周末要闻”，平时叫“盘中茶歇”
+        title = "🌴 周末要闻" if is_weekend else "🍵 盘中茶歇"
+        
+        try:
+            resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}])
+            send_tg(f"<b>{title}</b>\n\n{resp.choices[0].message.content}")
+        except Exception as e: print(f"❌ Periodic Error: {e}")
 
-                if "ALERT|" not in content:
-                    print("⚠️ AI 认为当前无重要机会，未触发推送")
-                
-                for line in content.split('\n'):
-                    if "ALERT|" in line:
-                        parts = line.split("|")
-                        if len(parts) >= 3:
-                            idx_str = re.sub(r'\D', '', parts[1])
-                            if idx_str:
-                                idx = int(idx_str)
-                                if idx < len(news):
-                                    t = news[idx]
-                                    # 组装单条内容
-                                    item_str = f"💡 <b>逻辑</b>：{parts[2]}\n📰 <a href='{t['link']}'>{t['title']}</a> ({t['time']})"
-                                    alerts_buffer.append(item_str)
-                
-                # === 核心修改：如果有内容，合并成一条发送 ===
-                if alerts_buffer:
-                    # 👇 这里把图标换成了 🎯
-                    final_msg = "<b>🎯 机会雷达汇总</b>\n\n" + "\n\n〰️〰️〰️〰️〰️\n\n".join(alerts_buffer)
-                    send_tg(final_msg)
-
-            except Exception as e:
-                print(f"❌ Monitor 模式执行失败: {e}")
-
-        elif mode == "after_market":
-            news_txt = "\n".join([f"- {n['title']}" for n in news[:35]])
-            prompt = f"你是复盘专家。基于下午新闻写《收盘复盘》：\n{news_txt}\n\n1.今日赚钱效应\n2.尾盘变化\n3.明日推演"
-            try:
-                resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}])
-                send_tg(f"<b>🌇 每日复盘</b>\n\n{resp.choices[0].message.content}")
-            except Exception as e:
-                print(f"❌ After Market 模式执行失败: {e}")
-            
-        elif mode == "periodic":
-            news_txt = "\n".join([f"- {n['title']}" for n in news[:20]])
-            prompt = f"快速总结盘中简报：\n{news_txt}"
-            try:
-                resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}])
-                send_tg(f"<b>🍵 盘中茶歇</b>\n\n{resp.choices[0].message.content}")
-            except Exception as e:
-                print(f"❌ Periodic 模式执行失败: {e}")
+    elif mode == "after_market":
+        # Workflow 已限制 1-5，这里不做额外周末判断，防止手动运行无效
+        news = get_news(240)
+        if not news: return
+        news_txt = "\n".join([f"- {n['title']}" for n in news[:35]])
+        prompt = PROMPTS["after_market"].format(news_txt=news_txt)
+        try:
+            resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}])
+            send_tg(f"<b>🌇 每日复盘</b>\n\n{resp.choices[0].message.content}")
+        except Exception as e: print(f"❌ After Market Error: {e}")
 
 def send_tg(content):
-    if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        print("❌ 缺失 Telegram 配置")
-        return
+    if not TG_BOT_TOKEN or not TG_CHAT_ID: return
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TG_CHAT_ID, "text": content, "parse_mode": "HTML", "disable_web_page_preview": True}
-    try:
-        r = requests.post(url, json=data, timeout=10)
-        if r.status_code != 200:
-            print(f"❌ TG 发送失败: {r.text}")
-        else:
-            print("✅ TG 消息发送成功")
-    except Exception as e:
-        print(f"❌ TG 请求异常: {e}")
+    try: requests.post(url, json=data, timeout=10)
+    except Exception as e: print(f"❌ TG Error: {e}")
 
 if __name__ == "__main__":
     mode = "daily"
-    if len(sys.argv) > 1:
-        mode = sys.argv[1]
-    
-    print(f"🚀 正在以 [{mode}] 模式启动脚本...")
-    print(f"🕒 系统时间 (UTC): {datetime.datetime.utcnow()}")
-    print(f"🕒 系统时间 (北京): {datetime.datetime.now(SHA_TZ)}")
-
-    if mode == "monitor" and os.getenv("GITHUB_EVENT_NAME") == "push":
-        send_tg("系统通知：代码已更新，监控任务启动中...")
-
+    if len(sys.argv) > 1: mode = sys.argv[1]
     analyze_and_notify(mode)
