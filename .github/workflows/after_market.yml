@@ -2,10 +2,9 @@ name: After Market Review
 
 on:
   schedule:
-    # UTC 07:30 = 北京时间 15:30
-    # 周一到周五运行 (1-5)
+    # 北京时间 15:30 (UTC 7:30)
     - cron: '30 7 * * 1-5'
-  workflow_dispatch: # 允许手动点按钮触发
+  workflow_dispatch:
 
 jobs:
   run-review:
@@ -14,7 +13,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       
-      - name: Python Setup
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.9'
@@ -22,10 +21,18 @@ jobs:
       - name: Install
         run: pip install requests openai
         
-      - name: Run Review
+      # 1. 大盘复盘
+      - name: Run Market Review
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-        # 运行 after_market 模式
         run: python main.py after_market
+
+      # 2. 个股收盘总结
+      - name: Run Stock Final Track
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: python main.py track
