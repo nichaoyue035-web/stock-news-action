@@ -2,30 +2,53 @@ name: Stock News Bot
 
 on:
   schedule:
-    # 北京时间 07:53 (即 UTC 时间 23:53)
-    - cron: '53 23 * * *'
+    # 北京时间 08:30 (即 UTC 0:30)
+    - cron: '30 0 * * 1-5'
   workflow_dispatch:
+
+permissions:
+  contents: write  # ⚠️ 必须开启写入权限，否则无法保存选股结果
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
-      - name: 下载代码
+      - name: Checkout
         uses: actions/checkout@v4
       
-      - name: 安装 Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.9'
           
-      - name: 安装依赖库
-        # 👇 这里增加了 openai
+      - name: Install Dependencies
         run: pip install requests openai
         
-      - name: 运行脚本
+      # 1. 运行早报 (不影响选股)
+      - name: Run Daily News
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          # 👇 这里把 AI 的钥匙传进去
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-        run: python main.py
+        run: python main.py daily
+
+      # 2. 运行 AI 选股 (Recommend Mode)
+      - name: Run AI Recommendation
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: python main.py recommend
+
+      # 3. 💾 将选股记忆文件(stock_pick.json) 提交回仓库
+      # 这样后续的盘中脚本才能读取到今天选了谁
+      - name: Commit & Push Memory
+        run: |
+          git config --global user.name 'GitHub Actions'
+          git config --global user.email 'actions@github.com'
+          # 如果文件存在（说明选股成功），则提交
+          if [ -f stock_pick.json ]; then
+            git add stock_pick.json
+            git commit -m "Update Daily Stock Pick [skip ci]" || echo "No changes"
+            git push
+          fi
