@@ -16,16 +16,38 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 SHA_TZ = timezone(timedelta(hours=8), 'Asia/Shanghai')
 PICK_FILE = "stock_pick.json"  # 💾 记忆文件：存储AI选的股票
 
-# 浏览器身份池
+# 浏览器身份池 (已更新为最新版，模拟多种浏览器)
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15"
 ]
 
 # 默认 Prompt
 DEFAULT_PROMPTS = {
     "daily": "你是投资总监。基于新闻生成《今日盘前内参》：\n{news_txt}\n\n1.核心主线\n2.利好/利空\n3.情绪判断",
-    "monitor": "你是短线交易员。请浏览以下快讯，筛选出具有【即时交易价值】或【重要市场影响】的消息。\n列表：\n{news_list}\n\n要求：\n1. 宁缺毋滥，只选重要的。\n2. 对每一条筛选出的消息，给出一句简短深刻的逻辑分析（利好谁？利空谁？预期多大？）。\n3. 严格按格式输出（每条一行）：ALERT|序号|逻辑分析",
+    
+    "monitor": """你是精通全球市场的资深交易员（同时负责A股和美股）。请浏览快讯，筛选出具有【即时交易价值】的消息。
+
+列表：
+{news_list}
+
+🔍 **筛选与判断标准**：
+1. **🇨🇳 A股关注**：国家级政策（发改委/央行）、行业突发利好（涨价/补贴/技术突破）、核心资产重组/业绩炸裂。
+   - *忽略*：普通的互动易回复、不痛不痒的个股调研。
+2. **🇺🇸 美股关注**：美联储动态（鲍威尔/CPI/非农）、科技巨头（Mag 7）重大新闻、中概股政策变化、地缘政治。
+   - *忽略*：常规的美股盘前波动播报、无关紧要的分析师评级。
+
+🚀 **输出格式**：
+如果没有重要消息，直接输出 'NONE'。
+如果有，请严格按以下格式输出（每条一行）：
+
+ALERT|序号|市场标记|逻辑分析
+（例如：ALERT|1|🇺🇸美股|CPI低于预期，利好纳指及科技成长股，关注TSLA/NVDA）
+（例如：ALERT|3|🇨🇳A股|低空经济顶层设计出台，板块将迎主升浪，利好万丰奥威等龙头）""",  # 👈 注意这里！必须有这个逗号
+
     "after_market": "你是复盘专家。基于下午新闻写《收盘复盘》：\n{news_txt}\n\n1.今日赚钱效应\n2.尾盘变化\n3.明日推演",
     "periodic": "快速总结盘中简报：\n{news_txt}",
     "funds": "你是一位资深A股分析师。这是今日行业资金数据：\n\n主力抢筹：\n{in_str}\n\n主力抛售：\n{out_str}\n\n请分析核心风口、避险板块并给出明日态度。",
@@ -289,29 +311,41 @@ def analyze_and_notify(mode="daily"):
         except: pass
 
     elif mode == "monitor":
-        if is_weekend: return
-        news = get_news(60)
-        recent_threshold = now - timedelta(minutes=25)
-        fresh_news = [n for n in news if n['datetime'] > recent_threshold]
+        # 1. 时间窗口 (配合你的谷歌定时器，建议设为 5-10 分钟频率)
+        # 如果你谷歌定时器是5分钟一次，这里建议设7分钟，防漏
+        recent_threshold = now - timedelta(minutes=7)
+        
+        # 2. 【双修版】通用垃圾拦截网
+        # 核心思路：只杀“废话”，保留“市场信号”
+        BLOCK_KEYWORDS = [
+            # --- A股特产噪音 ---
+            "互动易", "投资者关系", "接待", "调研",  # 除非特大，否则董秘回复多为废话
+            "聘任", "辞职", "换届", "召开", "核发",  # 行政人事变动
+            "公告速递", "异动回顾", "龙虎榜",        # 事后总结，不是即时信号
+            "融资净买入", "北向资金",               # 纯资金流数据，不仅刷屏且滞后
+            # --- 全球通用噪音 ---
+            "日元", "欧元", "韩元", "汇率",         # 除非你还炒外汇，否则这些只占版面
+            "债市", "国债期货"                      # 除非你炒债
+        ]
+
+        news = get_news(60) # 获取过去1小时的
+        fresh_news = []
+        for n in news:
+            if n['datetime'] <= recent_threshold: continue
+            
+            # 关键词过滤：只要包含垃圾词，直接扔掉
+            if any(k in n['title'] for k in BLOCK_KEYWORDS):
+                continue
+            
+            # (可选) 互动易特例：如果标题特别长(>20字)可能包含干货，可以放行；短的直接杀
+            if "互动平台" in n['title'] and len(n['digest']) < 20:
+                continue
+
+            fresh_news.append(n)
+
         if not fresh_news: return
 
-        news_titles = [f"{i}. {n['title']} (详情:{n['digest'][:60]})" for i, n in enumerate(fresh_news[:15])]
-        prompt = PROMPTS["monitor"].format(news_list="\n".join(news_titles))
-        try:
-            resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}])
-            content = resp.choices[0].message.content
-            alerts_buffer = []
-            for line in content.split('\n'):
-                if "ALERT|" in line:
-                    parts = line.split("|")
-                    if len(parts) >= 3:
-                        idx = int(re.sub(r'\D', '', parts[1]))
-                        if idx < len(fresh_news):
-                            t = fresh_news[idx]
-                            alerts_buffer.append(f"💡 <b>逻辑</b>：{parts[2]}\n📰 <a href='{t['link']}'>{t['title']}</a> ({t['time_str']})")
-            if alerts_buffer:
-                send_tg("<b>🎯 机会雷达汇总</b>\n\n" + "\n\n〰️〰️〰️〰️〰️\n\n".join(alerts_buffer))
-        except: pass
+        # ... 后续代码(Prompt调用) ...
 
     elif mode == "periodic":
         news = get_news(240) 
