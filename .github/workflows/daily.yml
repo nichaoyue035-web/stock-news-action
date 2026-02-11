@@ -1,9 +1,8 @@
 name: Stock News Bot
 
 on:
-  schedule:
-    # 北京时间 08:30 (即 UTC 0:30)
-    - cron: '30 0 * * 1-5'
+  # schedule:
+  #   - cron: '30 0 * * 1-5'  <-- 已注释，交由 Google Scheduler 触发
   workflow_dispatch:
 
 permissions:
@@ -33,6 +32,7 @@ jobs:
         run: python main.py daily
 
       # 2. 运行 AI 选股 (Recommend Mode)
+      # 这一步现在会同时生成 stock_pick.json 和 history.csv
       - name: Run AI Recommendation
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
@@ -40,15 +40,18 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: python main.py recommend
 
-      # 3. 💾 将选股记忆文件(stock_pick.json) 提交回仓库
-      # 这样后续的盘中脚本才能读取到今天选了谁
+      # 3. 💾 将选股记忆文件 和 历史战绩表 提交回仓库
       - name: Commit & Push Memory
         run: |
           git config --global user.name 'GitHub Actions'
           git config --global user.email 'actions@github.com'
-          # 如果文件存在（说明选股成功），则提交
-          if [ -f stock_pick.json ]; then
-            git add stock_pick.json
-            git commit -m "Update Daily Stock Pick [skip ci]" || echo "No changes"
-            git push
-          fi
+          
+          # 先拉取最新代码，防止多人操作导致冲突
+          git pull --rebase || echo "No remote changes"
+
+          # 强制添加这两个文件 (如果文件不存在也不会报错)
+          git add stock_pick.json history.csv || true
+          
+          # 提交并推送
+          git commit -m "Update Daily Stock Pick & History [skip ci]" || echo "No changes to commit"
+          git push
