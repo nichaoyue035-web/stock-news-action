@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import csv
 from datetime import datetime, timedelta
 from config import settings
 from utils.notifier import send_tg, log_info, log_error
@@ -62,14 +63,39 @@ def run_recommend():
             return
             
         # 6. 保存记忆并通知
-        with open(settings.PICK_FILE, "w", encoding="utf-8") as f:
-            json.dump(pick_data, f, ensure_ascii=False, indent=2)
-            
-        send_tg(f"<b>🎯 今日AI精选 (Pro版)</b>\n\n🦄 <b>{pick_data['name']} ({pick_data['code']})</b>\n当前价: {real_quote['price']}\n\n📝 <b>逻辑：</b>\n{pick_data['reason']}")
-        log_info(f"✅ 选股完成: {pick_data['name']}")
+        # [core/analyzer.py] -> run_recommend 函数内部
+
+    # ... (前文代码保持不变: 获取行情 real_quote, 保存 stock_pick.json 等)
+
+    # 6. 保存记忆并通知 (原有代码)
+    with open(settings.PICK_FILE, "w", encoding="utf-8") as f:
+        json.dump(pick_data, f, ensure_ascii=False, indent=2)
+
+    # === ✨ 新增代码开始: 追加到历史战绩表 ===
+    try:
+        today_str = datetime.now(settings.SHA_TZ).strftime("%Y-%m-%d")
+        file_exists = os.path.isfile(settings.HISTORY_FILE)
         
+        with open(settings.HISTORY_FILE, "a", newline='', encoding="utf-8") as f:
+            writer = csv.writer(f)
+            # 如果是新文件，先写表头
+            if not file_exists:
+                writer.writerow(["Date", "Name", "Code", "Start_Price", "Reason"])
+            
+            # 写入今日记录
+            writer.writerow([
+                today_str, 
+                pick_data['name'], 
+                pick_data['code'], 
+                real_quote['price'], 
+                pick_data['reason'].replace("\n", " ") # 去掉换行防止破坏CSV格式
+            ])
+        log_info(f"✅ 已计入历史战绩: {pick_data['name']}")
     except Exception as e:
-        log_error(f"❌ 选股结果解析失败: {e}")
+        log_error(f"❌ 历史记录写入失败: {e}")
+    # === ✨ 新增代码结束 ===
+
+    send_tg(f"<b>🎯 今日AI精选 (Pro版)</b>\n\n🦄 <b>{pick_data['name']} ({pick_data['code']})</b>\n当前价: {real_quote['price']}\n\n📝 <b>逻辑：</b>\n{pick_data['reason']}")
 
 def run_track():
     """【追踪模式】跟踪已选股票"""
@@ -217,3 +243,68 @@ def run_analysis(mode):
         content = get_ai_response(prompt)
         if content:
             send_tg(f"<b>{title}</b>\n\n{content}")
+
+# [core/analyzer.py] -> 新增函数
+
+def run_review():
+    """【复盘模式】统计历史战绩与胜率"""
+    log_info("启动：历史战绩复盘")
+    
+    if not os.path.exists(settings.HISTORY_FILE):
+        log_info("⚠️ 暂无历史记录")
+        return
+
+    total_count = 0
+    win_count = 0
+    total_profit = 0.0
+    details = []
+
+    try:
+        # 读取最近的 10 条记录，避免由于 API 限制导致超时
+        rows = []
+        with open(settings.HISTORY_FILE, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+        
+        # 只取最近 10 次选股进行展示
+        recent_rows = rows[-10:] if len(rows) > 10 else rows
+        
+        for row in recent_rows:
+            code = row['Code']
+            start_price = float(row['Start_Price'])
+            
+            # 获取最新行情
+            curr_quote = get_stock_quote(code)
+            if not curr_quote: continue
+            
+            curr_price = float(curr_quote['price'])
+            
+            # 计算收益率
+            profit_pct = (curr_price - start_price) / start_price * 100
+            
+            # 统计
+            total_count += 1
+            total_profit += profit_pct
+            if profit_pct > 0:
+                win_count += 1
+                
+            icon = "🔴" if profit_pct > 0 else "🟢"
+            details.append(f"{icon} <b>{row['Name']}</b>: {row['Date'][5:]} 入场, 累计 <b>{profit_pct:+.2f}%</b>")
+
+        if total_count == 0: return
+
+        win_rate = (win_count / total_count) * 100
+        avg_profit = total_profit / total_count
+
+        msg = (
+            f"<b>📊 AI 战绩周报 (近{total_count}次)</b>\n\n"
+            f"🏆 <b>胜率: {win_rate:.0f}%</b>\n"
+            f"💰 <b>平均收益: {avg_profit:+.2f}%</b>\n"
+            f"------------------\n" +
+            "\n".join(details)
+        )
+        
+        send_tg(msg)
+        
+    except Exception as e:
+        log_error(f"❌ 复盘统计失败: {e}")
