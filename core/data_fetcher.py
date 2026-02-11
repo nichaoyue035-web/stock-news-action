@@ -126,6 +126,20 @@ def get_hot_stocks_data():
         log_error(f"❌ 热门股获取失败: {e}")
         return []
 
+
+
+def _normalize_eastmoney_decimal(raw_value, scale=100, digits=2):
+    """将东方财富常见的放大整数行情字段还原为小数文本。"""
+    if raw_value in (None, '-', ''):
+        return '-'
+
+    try:
+        value = float(raw_value)
+        return f"{value / scale:.{digits}f}"
+    except (ValueError, TypeError):
+        return str(raw_value)
+
+
 def get_stock_quote(code):
     """抓取单只股票行情"""
     # 简单的市场判断：6开头是沪市(1)，其他认为是深市(0)
@@ -137,8 +151,10 @@ def get_stock_quote(code):
         if not data: return None
         return {
             "name": data.get('f14', '未知'),
-            "price": data.get('f43', '-'),
-            "pct": data.get('f170', '-')
+            # 东财 f43 常见为放大100倍的最新价（如 1234 -> 12.34）
+            "price": _normalize_eastmoney_decimal(data.get('f43'), scale=100, digits=2),
+            # 东财 f170 常见为放大100倍的涨跌幅（如 156 -> 1.56）
+            "pct": _normalize_eastmoney_decimal(data.get('f170'), scale=100, digits=2)
         }
     except Exception as e:
         log_error(f"❌ 个股行情获取失败 [{code}]: {e}")
