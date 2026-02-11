@@ -86,16 +86,26 @@ def run_track():
         quote = get_stock_quote(pick_data['code'])
         if not quote: return
 
+        raw_pct = quote.get('pct', '-')
+        pct_num = None
+        try:
+            pct_num = float(str(raw_pct).replace('%', '').strip())
+        except (ValueError, TypeError):
+            pct_num = None
+
+        pct_for_prompt = f"{pct_num:.2f}" if pct_num is not None else str(raw_pct).replace('%', '').strip()
+        pct_text = f"{pct_num:.2f}%" if pct_num is not None else str(raw_pct)
+
         prompts = load_prompts()
         track_prompt = prompts.get("track", settings.DEFAULT_PROMPTS["track"]).format(
-            name=pick_data['name'], code=pick_data['code'], price=quote['price'], pct=quote['pct']
+            name=pick_data['name'], code=pick_data['code'], price=quote['price'], pct=pct_for_prompt
         )
-        
+
         analysis = get_ai_response(track_prompt)
         if not analysis: return
-        
-        icon = "🔴" if float(quote['pct'].strip('%')) > 0 else "🟢"
-        send_tg(f"<b>👀 选股跟踪: {pick_data['name']}</b>\n\n{icon} 现价: {quote['price']} ({quote['pct']}%)\n\n🧠 <b>AI观点：</b>\n{analysis}")
+
+        icon = "🔴" if pct_num is not None and pct_num > 0 else "🟢" if pct_num is not None else "⚪️"
+        send_tg(f"<b>👀 选股跟踪: {pick_data['name']}</b>\n\n{icon} 现价: {quote['price']} ({pct_text})\n\n🧠 <b>AI观点：</b>\n{analysis}")
         
     except Exception as e:
         log_error(f"❌ 追踪执行失败: {e}")
