@@ -39,3 +39,6 @@ DEFAULT_PROMPTS = {
     "funds": "你是一位资深A股分析师。这是今日行业资金数据：\n\n主力抢筹：\n{in_str}\n\n主力抛售：\n{out_str}\n\n请分析核心风口、避险板块并给出明日态度。",
     "track": "你今天早上推荐了【{name} ({code})】。\n当前行情：现价 {price}，涨跌幅 {pct}%。\n\n作为游资交易员，请评价当前走势：\n1. 是否符合预期？\n2. 操作建议（持仓/补仓/止损/止盈）？\n3. 简短犀利，100字以内。"
 }
+
+# ... (在 PICK_FILE 下面增加一行)
+HISTORY_FILE = os.path.join(BASE_DIR, "history.csv")   # 战绩记录表
