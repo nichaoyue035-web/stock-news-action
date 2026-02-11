@@ -137,33 +137,72 @@ def run_analysis(mode):
             send_tg(f"<b>🌅 股市全景内参</b>\n\n{content}")
 
     elif mode == "monitor":
-        news = get_news(60) # 1小时
-        # 筛选最近25分钟的新闻
-        recent_threshold = datetime.now(settings.SHA_TZ) - timedelta(minutes=25)
-        fresh_news = [n for n in news if n['datetime'] > recent_threshold]
-        if not fresh_news: 
+        news = get_news(90) # 1.5小时，给强信号留一点缓冲
+        now = datetime.now(settings.SHA_TZ)
+
+        # “不那么灵敏，但又有点灵敏”：
+        # - 普通新闻只看最近15分钟
+        # - 强关键词新闻放宽到30分钟
+        strict_threshold = now - timedelta(minutes=15)
+        soft_threshold = now - timedelta(minutes=30)
+        high_impact_keywords = [
+            "涨停", "跌停", "停牌", "复牌", "业绩", "并购", "重组", "回购", "增持", "减持",
+            "政策", "降息", "加息", "关税", "制裁", "突发", "北向", "主力", "龙头", "算力", "芯片", "AI"
+        ]
+
+        fresh_news = []
+        for n in news:
+            if n['datetime'] >= strict_threshold:
+                fresh_news.append(n)
+                continue
+
+            if n['datetime'] >= soft_threshold:
+                text_blob = f"{n['title']} {n['digest']}"
+                if any(k in text_blob for k in high_impact_keywords):
+                    fresh_news.append(n)
+
+        if not fresh_news:
             log_info("暂无最新重要快讯")
             return
 
-        news_titles = [f"{i}. {n['title']} (详情:{n['digest'][:60]})" for i, n in enumerate(fresh_news[:15])]
+        # 去重+限流，避免雷达过于敏感
+        dedup_news = []
+        seen_titles = set()
+        for n in fresh_news:
+            title_key = n['title'].strip()
+            if title_key in seen_titles:
+                continue
+            seen_titles.add(title_key)
+            dedup_news.append(n)
+
+        news_titles = [f"{i}. {n['title']} (详情:{n['digest'][:60]})" for i, n in enumerate(dedup_news[:12])]
         prompt = prompts["monitor"].format(news_list="\n".join(news_titles))
-        
+
         content = get_ai_response(prompt)
-        if not content: return
-        
-        # 解析 ALERT 格式
+        if not content:
+            return
+
+        # 解析 ALERT 格式，最多推送3条，控制噪音
         alerts_buffer = []
-        for line in content.split('\n'):
-            if "ALERT|" in line:
-                parts = line.split("|")
-                if len(parts) >= 3:
-                    try:
-                        idx = int(re.sub(r'\D', '', parts[1]))
-                        if idx < len(fresh_news):
-                            t = fresh_news[idx]
-                            alerts_buffer.append(f"💡 <b>逻辑</b>：{parts[2]}\n📰 <a href='{t['link']}'>{t['title']}</a> ({t['time_str']})")
-                    except: pass
-        
+        for line in content.split("\n"):
+            if "ALERT|" not in line:
+                continue
+
+            parts = line.split("|")
+            if len(parts) < 3:
+                continue
+
+            try:
+                idx = int(re.sub(r"\D", "", parts[1]))
+                if idx < len(dedup_news):
+                    t = dedup_news[idx]
+                    alerts_buffer.append(f"💡 <b>逻辑</b>：{parts[2]}\n📰 <a href='{t['link']}'>{t['title']}</a> ({t['time_str']})")
+            except (ValueError, TypeError):
+                continue
+
+            if len(alerts_buffer) >= 3:
+                break
+
         if alerts_buffer:
             send_tg("<b>🎯 机会雷达汇总</b>\n\n" + "\n\n〰️〰️〰️〰️〰️\n\n".join(alerts_buffer))
 
