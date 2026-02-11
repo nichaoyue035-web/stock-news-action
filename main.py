@@ -169,7 +169,10 @@ def get_stock_quote(code):
     """获取个股实时行情 (用于验证和追踪)"""
     # 简易判断市场: 6开头为沪市(1), 否则深市(0)
     sec_id = f"1.{code}" if str(code).startswith("6") else f"0.{code}"
-    url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={sec_id}&fields=f43,f170,f14" # 现价, 涨跌幅, 名称
+    
+    # 👇 修改这里：在 URL 末尾加上 &fltt=2
+    url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={sec_id}&fields=f43,f170,f14&fltt=2" 
+    
     try:
         resp = requests.get(url, headers=get_random_header(), timeout=5)
         data = resp.json().get('data', {})
