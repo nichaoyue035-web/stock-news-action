@@ -314,40 +314,72 @@ def analyze_and_notify(mode="daily"):
         except: pass
 
     elif mode == "monitor":
-        # 1. 时间窗口 (配合你的谷歌定时器，建议设为 5-10 分钟频率)
-        # 如果你谷歌定时器是5分钟一次，这里建议设7分钟，防漏
-        recent_threshold = now - timedelta(minutes=7)
+        # 1. 宽裕的时间窗口 (防止定时器延迟导致漏单)
+        # 只要新闻发生在过去 20 分钟内，都抓给 AI 看
+        recent_threshold = now - timedelta(minutes=20)
         
-        # 2. 【双修版】通用垃圾拦截网
-        # 核心思路：只杀“废话”，保留“市场信号”
+        # 2. 智能垃圾拦截网 (只杀废话，不杀美股)
         BLOCK_KEYWORDS = [
-            # --- A股特产噪音 ---
-            "互动易", "投资者关系", "接待", "调研",  # 除非特大，否则董秘回复多为废话
-            "聘任", "辞职", "换届", "召开", "核发",  # 行政人事变动
-            "公告速递", "异动回顾", "龙虎榜",        # 事后总结，不是即时信号
-            "融资净买入", "北向资金",               # 纯资金流数据，不仅刷屏且滞后
-            # --- 全球通用噪音 ---
-            "日元", "欧元", "韩元", "汇率",         # 除非你还炒外汇，否则这些只占版面
-            "债市", "国债期货"                      # 除非你炒债
+            "互动易", "投资者关系", "接待", "调研", "召开", # A股废话
+            "聘任", "辞职", "监事", "核发", "公告速递",    # 行政公文
+            "融资净买入", "北向资金", "龙虎榜",            # 滞后数据
+            "日元", "韩元", "债市"                        # 纯外汇债券(保留美元)
         ]
 
-        news = get_news(60) # 获取过去1小时的
+        news = get_news(60) # 获取过去1小时新闻池
+        if not news: return
+
         fresh_news = []
         for n in news:
+            # 时间过滤
             if n['datetime'] <= recent_threshold: continue
             
-            # 关键词过滤：只要包含垃圾词，直接扔掉
+            # 关键词过滤：包含垃圾词就扔掉
             if any(k in n['title'] for k in BLOCK_KEYWORDS):
                 continue
             
-            # (可选) 互动易特例：如果标题特别长(>20字)可能包含干货，可以放行；短的直接杀
+            # 互动易特例：只有标题很长(包含干货)才保留
             if "互动平台" in n['title'] and len(n['digest']) < 20:
                 continue
 
             fresh_news.append(n)
 
-        if not fresh_news: return
+        if not fresh_news: 
+            print("💤 暂无新消息")
+            return
 
+        # 格式化发给 AI
+        news_titles = [f"{i}. {n['title']} (详情:{n['digest'][:80]})" for i, n in enumerate(fresh_news[:12])]
+        prompt = PROMPTS["monitor"].format(news_list="\n".join(news_titles))
+        
+        try:
+            resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}])
+            content = resp.choices[0].message.content
+            
+            # 如果 AI 说没机会，或者由于幻觉输出了空，就不发
+            if "NONE" in content or len(content) < 5:
+                return
+
+            alerts_buffer = []
+            for line in content.split('\n'):
+                if "ALERT|" in line:
+                    parts = line.split("|")
+                    if len(parts) >= 4: # ALERT|序号|标签|逻辑
+                        idx_str = re.sub(r'\D', '', parts[1])
+                        if not idx_str: continue
+                        idx = int(idx_str)
+                        
+                        if idx < len(fresh_news):
+                            t = fresh_news[idx]
+                            tag = parts[2].strip() # 🇺🇸美股 或 🇨🇳A股
+                            logic = parts[3].strip()
+                            # 组合消息
+                            alerts_buffer.append(f"💡 <b>{tag}</b>：{logic}\n📰 <a href='{t['link']}'>{t['title']}</a> ({t['time_str']})")
+            
+            if alerts_buffer:
+                send_tg("<b>🎯 机会雷达 (双模版)</b>\n\n" + "\n\n".join(alerts_buffer))
+        except Exception as e:
+            print(f"❌ Monitor Error: {e}")
         # ... 后续代码(Prompt调用) ...
 
     elif mode == "periodic":
