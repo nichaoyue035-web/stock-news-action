@@ -16,33 +16,16 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 SHA_TZ = timezone(timedelta(hours=8), 'Asia/Shanghai')
 PICK_FILE = "stock_pick.json"  # 💾 记忆文件：存储AI选的股票
 
-# 浏览器身份池 (已更新为最新版，模拟多种浏览器)
+# 浏览器身份池
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15"
 ]
 
 # 默认 Prompt
 DEFAULT_PROMPTS = {
     "daily": "你是投资总监。基于新闻生成《今日盘前内参》：\n{news_txt}\n\n1.核心主线\n2.利好/利空\n3.情绪判断",
-    
-    "monitor": """你是精通全球市场的资深交易员。请浏览快讯，筛选出具有【即时交易价值】或【题材发酵潜力】的消息。
-列表：
-{news_list}
-
-🔍 **筛选标准（中度灵敏）**：
-1. **🇨🇳 A股**：保留政策指导、行业异动（涨价/新技术）、龙头股实质利好、重要机构调研。过滤毫无营养的日常公告。
-2. **🇺🇸 美股**：保留宏观数据、美联储表态、知名科技股动态、热门中概股异动。过滤常规的盘前/盘中微小涨跌播报。
-
-🚀 **输出格式**：
-如果全是没用的废话，输出 'NONE'。
-如果有价值（哪怕是可能引发板块轮动的消息），请按此格式输出（每条一行）：
-ALERT|序号|🇺🇸美股|逻辑分析(简短犀利)
-ALERT|序号|🇨🇳A股|逻辑分析(简短犀利)""",
-
+    "monitor": "你是短线交易员。请浏览以下快讯，筛选出具有【即时交易价值】或【重要市场影响】的消息。\n列表：\n{news_list}\n\n要求：\n1. 宁缺毋滥，只选重要的。\n2. 对每一条筛选出的消息，给出一句简短深刻的逻辑分析（利好谁？利空谁？预期多大？）。\n3. 严格按格式输出（每条一行）：ALERT|序号|逻辑分析",
     "after_market": "你是复盘专家。基于下午新闻写《收盘复盘》：\n{news_txt}\n\n1.今日赚钱效应\n2.尾盘变化\n3.明日推演",
     "periodic": "快速总结盘中简报：\n{news_txt}",
     "funds": "你是一位资深A股分析师。这是今日行业资金数据：\n\n主力抢筹：\n{in_str}\n\n主力抛售：\n{out_str}\n\n请分析核心风口、避险板块并给出明日态度。",
@@ -164,10 +147,7 @@ def get_stock_quote(code):
     """获取个股实时行情 (用于验证和追踪)"""
     # 简易判断市场: 6开头为沪市(1), 否则深市(0)
     sec_id = f"1.{code}" if str(code).startswith("6") else f"0.{code}"
-    
-    # 👇 修改这里：在 URL 末尾加上 &fltt=2
-    url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={sec_id}&fields=f43,f170,f14&fltt=2" 
-    
+    url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={sec_id}&fields=f43,f170,f14" # 现价, 涨跌幅, 名称
     try:
         resp = requests.get(url, headers=get_random_header(), timeout=5)
         data = resp.json().get('data', {})
@@ -309,67 +289,29 @@ def analyze_and_notify(mode="daily"):
         except: pass
 
     elif mode == "monitor":
-        # 1. 【中度灵敏】时间窗口：15分钟 (刚好配合 5~10 分钟的定时器，有容错又不拖沓)
-        recent_threshold = now - timedelta(minutes=15)
-        
-        # 2. 【中度灵敏】过滤网：放过了“机构调研”，只拦截绝对的废话
-        BLOCK_KEYWORDS = [
-            "互动易", "召开", "聘任", "辞职", "监事", "核发", "公告速递", # 纯行政公文
-            "融资净买入", "北向资金", "龙虎榜",            # 滞后的盘后总结
-            "日元", "韩元", "债市"                        # 纯非股类资产
-        ]
+        if is_weekend: return
+        news = get_news(60)
+        recent_threshold = now - timedelta(minutes=25)
+        fresh_news = [n for n in news if n['datetime'] > recent_threshold]
+        if not fresh_news: return
 
-        news = get_news(60) 
-        if not news: return
-
-        fresh_news = []
-        for n in news:
-            if n['datetime'] <= recent_threshold: continue
-            
-            # 关键词拦截
-            if any(k in n['title'] for k in BLOCK_KEYWORDS):
-                continue
-            
-            # 互动易依然拦截短废话，但长篇幅放行
-            if "互动平台" in n['title'] and len(n['digest']) < 20:
-                continue
-
-            fresh_news.append(n)
-
-        if not fresh_news: 
-            print("💤 暂无新消息")
-            return
-
-        # 稍微多给 AI 喂几条新闻（前15条），让它有对比空间
-        news_titles = [f"{i}. {n['title']} (详情:{n['digest'][:80]})" for i, n in enumerate(fresh_news[:15])]
+        news_titles = [f"{i}. {n['title']} (详情:{n['digest'][:60]})" for i, n in enumerate(fresh_news[:15])]
         prompt = PROMPTS["monitor"].format(news_list="\n".join(news_titles))
-        
         try:
             resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}])
             content = resp.choices[0].message.content
-            
-            if "NONE" in content or len(content) < 5:
-                return
-
             alerts_buffer = []
             for line in content.split('\n'):
                 if "ALERT|" in line:
                     parts = line.split("|")
-                    if len(parts) >= 4:
-                        idx_str = re.sub(r'\D', '', parts[1])
-                        if not idx_str: continue
-                        idx = int(idx_str)
-                        
+                    if len(parts) >= 3:
+                        idx = int(re.sub(r'\D', '', parts[1]))
                         if idx < len(fresh_news):
                             t = fresh_news[idx]
-                            tag = parts[2].strip() 
-                            logic = parts[3].strip()
-                            alerts_buffer.append(f"💡 <b>{tag}</b>：{logic}\n📰 <a href='{t['link']}'>{t['title']}</a> ({t['time_str']})")
-            
+                            alerts_buffer.append(f"💡 <b>逻辑</b>：{parts[2]}\n📰 <a href='{t['link']}'>{t['title']}</a> ({t['time_str']})")
             if alerts_buffer:
-                send_tg("<b>🎯 机会雷达 (中度灵敏版)</b>\n\n" + "\n\n".join(alerts_buffer))
-        except Exception as e:
-            print(f"❌ Monitor Error: {e}")
+                send_tg("<b>🎯 机会雷达汇总</b>\n\n" + "\n\n〰️〰️〰️〰️〰️\n\n".join(alerts_buffer))
+        except: pass
 
     elif mode == "periodic":
         news = get_news(240) 
