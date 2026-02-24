@@ -194,7 +194,7 @@ def run_analysis(mode: str) -> None:
         news = get_news(1440)
         if not news:
             return
-        news_txt = "\n".join([f"- {n['title']}" for n in news[:30]])
+        news_txt = "\n".join([f"- [{n.get('source', 'unknown')}] {n['title']}" for n in news[:30]])
         content = get_ai_response(prompts.get("daily", settings.DEFAULT_PROMPTS["daily"]).format(news_txt=news_txt))
         if content:
             send_tg(f"<b>🌅 股市全景内参</b>\n\n{content}")
@@ -225,7 +225,7 @@ def run_analysis(mode: str) -> None:
                 seen_titles.add(item["title"])
                 dedup_news.append(item)
 
-        news_titles = [f"{i}. {n['title']} (详情:{n['digest'][:60]})" for i, n in enumerate(dedup_news[:12])]
+        news_titles = [f"{i}. [{n.get('source', 'unknown')}] {n['title']} (详情:{n['digest'][:60]})" for i, n in enumerate(dedup_news[:12])]
         content = get_ai_response(prompts.get("monitor", settings.DEFAULT_PROMPTS["monitor"]).format(news_list="\n".join(news_titles)))
         if not content:
             return
@@ -256,7 +256,7 @@ def run_analysis(mode: str) -> None:
         news = get_news(180)
         if not news:
             return
-        news_txt = "\n".join([f"- {n['title']} (详情:{n['digest'][:40]})" for n in news[:80]])
+        news_txt = "\n".join([f"- [{n.get('source', 'unknown')}] {n['title']} (详情:{n['digest'][:40]})" for n in news[:80]])
         content = get_ai_response(prompts.get("global", settings.DEFAULT_PROMPTS["global"]).format(news_txt=news_txt))
         if content and "无重大事件" not in content:
             send_tg(
@@ -270,7 +270,7 @@ def run_analysis(mode: str) -> None:
         news = get_news(240)
         if not news:
             return
-        news_txt = "\n".join([f"- {n['title']}" for n in news[:25]])
+        news_txt = "\n".join([f"- [{n.get('source', 'unknown')}] {n['title']}" for n in news[:25]])
         title = "🌇 每日复盘" if mode == "after_market" else "🍵 盘中茶歇"
         content = get_ai_response(prompts.get(mode, settings.DEFAULT_PROMPTS[mode]).format(news_txt=news_txt))
         if content:

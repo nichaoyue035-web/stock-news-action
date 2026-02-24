@@ -27,6 +27,18 @@ URL_NEWS = "https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_100_
 URL_FUNDS = "https://push2.eastmoney.com/api/qt/clist/get"
 URL_QUOTE = "https://push2.eastmoney.com/api/qt/stock/get"
 
+
+# 海外默认信息源（可通过环境变量覆盖）
+DEFAULT_GLOBAL_RSS = "https://feeds.reuters.com/reuters/worldNews"
+GLOBAL_NEWS_RSS = os.getenv("GLOBAL_NEWS_RSS", DEFAULT_GLOBAL_RSS)
+
+# 额外信息源（RSS），支持多个地址，用英文逗号分隔。
+# 示例：https://example.com/feed.xml,https://another-site.com/rss
+CUSTOM_NEWS_RSS = [url.strip() for url in os.getenv("CUSTOM_NEWS_RSS", "").split(",") if url.strip()]
+
+# 合并后的外部信息源列表（海外 + 自定义）
+EXTERNAL_NEWS_RSS = [url for url in [GLOBAL_NEWS_RSS, *CUSTOM_NEWS_RSS] if url]
+
 DEFAULT_PROMPTS = {
     "daily": "你是投资总监。基于新闻生成《今日盘前内参》：\n{news_txt}\n\n1.核心主线\n2.利好/利空\n3.情绪判断",
     "monitor": "你是短线交易员。请浏览以下快讯，筛选出具有【即时交易价值】或【重要市场影响】的消息。\n列表：\n{news_list}\n\n要求：\n1. 宁缺毋滥，只选重要的。\n2. 对每一条筛选出的消息，给出一句简短深刻的逻辑分析（利好谁？利空谁？预期多大？）。\n3. 严格按格式输出（每条一行）：ALERT|序号|逻辑分析",
