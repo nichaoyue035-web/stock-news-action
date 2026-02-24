@@ -1,181 +1,321 @@
+from __future__ import annotations
+
+import csv
 import json
 import os
 import re
-import csv
 from datetime import datetime, timedelta
-from config import settings
-from utils.notifier import send_tg, log_info, log_error
-from utils.ai_client import get_ai_response
-from core.data_fetcher import get_news, get_market_funds, get_hot_stocks_data, get_stock_quote
+from typing import Any, Optional
 
-def load_prompts():
+from config import settings
+from core.data_fetcher import get_hot_stocks_data, get_market_funds, get_news, get_stock_quote
+from utils.ai_client import get_ai_response
+from utils.notifier import log_error, log_info, send_tg
+
+HIGH_IMPACT_KEYWORDS: tuple[str, ...] = (
+    "涨停",
+    "跌停",
+    "停牌",
+    "复牌",
+    "业绩",
+    "并购",
+    "重组",
+    "回购",
+    "增持",
+    "减持",
+    "政策",
+    "降息",
+    "AI",
+    "算力",
+    "芯片",
+)
+
+
+def load_prompts() -> dict[str, str]:
+    """Load prompt templates from file; fallback to defaults on any error."""
     try:
         if os.path.exists(settings.PROMPTS_FILE):
-            with open(settings.PROMPTS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception as e:
-        log_error(f"⚠️ 提示词文件读取失败: {e}，将使用默认 Prompt")
+            with open(settings.PROMPTS_FILE, "r", encoding="utf-8") as file:
+                loaded = json.load(file)
+                if isinstance(loaded, dict):
+                    return loaded
+                log_error("⚠️ 提示词文件格式异常: 非对象类型，将使用默认 Prompt")
+    except Exception as exc:
+        log_error(f"⚠️ 提示词文件读取失败: {exc}，将使用默认 Prompt")
     return settings.DEFAULT_PROMPTS
 
-def run_recommend():
+
+def _append_history(pick_data: dict[str, Any], start_price: str) -> None:
+    """Append today's recommendation record to history CSV."""
+    try:
+        today_str = datetime.now(settings.SHA_TZ).strftime("%Y-%m-%d")
+        file_exists = os.path.isfile(settings.HISTORY_FILE)
+        with open(settings.HISTORY_FILE, "a", newline="", encoding="utf-8") as file:
+            writer = csv.writer(file)
+            if not file_exists:
+                writer.writerow(["Date", "Name", "Code", "Start_Price", "Reason"])
+            writer.writerow(
+                [
+                    today_str,
+                    pick_data["name"],
+                    pick_data["code"],
+                    start_price,
+                    str(pick_data["reason"]).replace("\n", " "),
+                ]
+            )
+    except Exception as exc:
+        log_error(f"❌ 历史写入失败: {exc}")
+
+
+def _extract_pick_data(content: str) -> Optional[dict[str, Any]]:
+    """Extract stock pick JSON object from model response text."""
+    json_match = re.search(r"\{.*\}", content, re.DOTALL)
+    if not json_match:
+        log_error("❌ AI 返回内容中未找到 JSON")
+        return None
+
+    try:
+        parsed = json.loads(json_match.group())
+    except json.JSONDecodeError as exc:
+        log_error(f"❌ AI 返回 JSON 解析失败: {exc}")
+        return None
+
+    required_keys = ("name", "code", "reason")
+    if not isinstance(parsed, dict) or any(key not in parsed for key in required_keys):
+        log_error("❌ AI 返回 JSON 缺少必要字段(name/code/reason)")
+        return None
+    return parsed
+
+
+def _safe_pct_value(raw_pct: Any) -> tuple[Optional[float], str]:
+    """Convert raw pct text to numeric and normalized string for prompt/message."""
+    text = str(raw_pct).replace("%", "").strip()
+    try:
+        pct_num = float(text)
+        return pct_num, f"{pct_num:.2f}"
+    except (ValueError, TypeError):
+        return None, text
+
+
+def run_recommend() -> None:
     log_info("启动：AI 选股推荐")
     candidates = get_hot_stocks_data()
-    if not candidates: return
-    candidates_str = "\n".join([f"- {s['name']} (代码:{s['code']}, 涨幅:{s['pct']}, 成交:{s['amount']})" for s in candidates])
-    news = get_news(720) 
+    if not candidates:
+        return
+
+    candidates_str = "\n".join(
+        [f"- {s['name']} (代码:{s['code']}, 涨幅:{s['pct']}, 成交:{s['amount']})" for s in candidates]
+    )
+    news = get_news(720)
     news_txt = "\n".join([f"- {n['title']}" for n in news[:15]])
-    base_prompt = ("你是极其理性的量化交易员。请从下方的【候选股票列表】中，挑选唯一一只最符合当前市场热点和新闻面的股票。\n\n"
+    base_prompt = (
+        "你是极其理性的量化交易员。请从下方的【候选股票列表】中，挑选唯一一只最符合当前市场热点和新闻面的股票。\n\n"
         f"【候选股票列表】:\n{candidates_str}\n\n【近期新闻】:\n{news_txt}\n\n"
-        "要求：\n1. 必须从候选列表中选一只，绝对禁止捏造。\n2. 输出 JSON 格式：{\"name\": \"股票名\", \"code\": \"6位代码\", \"reason\": \"简短理由\"}")
+        "要求：\n1. 必须从候选列表中选一只，绝对禁止捏造。\n2. 输出 JSON 格式：{\"name\": \"股票名\", \"code\": \"6位代码\", \"reason\": \"简短理由\"}"
+    )
+
     content = get_ai_response(base_prompt, temperature=0.1)
-    if not content: return
-    try:
-        json_match = re.search(r'\{.*\}', content, re.DOTALL)
-        if not json_match: return
-        pick_data = json.loads(json_match.group())
-        real_quote = get_stock_quote(pick_data['code'])
-        if not real_quote: return
-        with open(settings.PICK_FILE, "w", encoding="utf-8") as f:
-            json.dump(pick_data, f, ensure_ascii=False, indent=2)
-        try:
-            today_str = datetime.now(settings.SHA_TZ).strftime("%Y-%m-%d")
-            file_exists = os.path.isfile(settings.HISTORY_FILE)
-            with open(settings.HISTORY_FILE, "a", newline='', encoding="utf-8") as f:
-                writer = csv.writer(f)
-                if not file_exists: writer.writerow(["Date", "Name", "Code", "Start_Price", "Reason"])
-                writer.writerow([today_str, pick_data['name'], pick_data['code'], real_quote['price'], pick_data['reason'].replace("\n", " ")])
-        except Exception as e: log_error(f"❌ 历史写入失败: {e}")
-        send_tg(f"<b>🎯 今日AI精选 (Pro版)</b>\n\n🦄 <b>{pick_data['name']} ({pick_data['code']})</b>\n当前价: {real_quote['price']}\n\n📝 <b>逻辑：</b>\n{pick_data['reason']}")
-    except Exception as e: log_error(f"❌ 解析失败: {e}")
+    if not content:
+        return
 
-def run_track():
-    if not os.path.exists(settings.PICK_FILE): return
+    pick_data = _extract_pick_data(content)
+    if not pick_data:
+        return
+
+    quote = get_stock_quote(pick_data["code"])
+    if not quote:
+        return
+
     try:
-        with open(settings.PICK_FILE, "r", encoding="utf-8") as f: pick_data = json.load(f)
-        quote = get_stock_quote(pick_data['code'])
-        if not quote: return
-        raw_pct = quote.get('pct', '-')
-        try: pct_num = float(str(raw_pct).replace('%', '').strip())
-        except: pct_num = None
-        pct_for_prompt = f"{pct_num:.2f}" if pct_num is not None else str(raw_pct).replace('%', '').strip()
+        with open(settings.PICK_FILE, "w", encoding="utf-8") as file:
+            json.dump(pick_data, file, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        log_error(f"❌ 选股结果写入失败: {exc}")
+        return
+
+    _append_history(pick_data, quote["price"])
+    send_tg(
+        f"<b>🎯 今日AI精选 (Pro版)</b>\n\n🦄 <b>{pick_data['name']} ({pick_data['code']})</b>\n当前价: {quote['price']}\n\n📝 <b>逻辑：</b>\n{pick_data['reason']}"
+    )
+
+
+def run_track() -> None:
+    if not os.path.exists(settings.PICK_FILE):
+        return
+
+    try:
+        with open(settings.PICK_FILE, "r", encoding="utf-8") as file:
+            pick_data = json.load(file)
+    except Exception as exc:
+        log_error(f"❌ 读取选股文件失败: {exc}")
+        return
+
+    try:
+        quote = get_stock_quote(pick_data["code"])
+        if not quote:
+            return
+
+        pct_num, pct_for_prompt = _safe_pct_value(quote.get("pct", "-"))
         prompts = load_prompts()
-        track_prompt = prompts.get("track", settings.DEFAULT_PROMPTS["track"]).format(name=pick_data['name'], code=pick_data['code'], price=quote['price'], pct=pct_for_prompt)
+        track_prompt = prompts.get("track", settings.DEFAULT_PROMPTS["track"]).format(
+            name=pick_data["name"],
+            code=pick_data["code"],
+            price=quote["price"],
+            pct=pct_for_prompt,
+        )
         analysis = get_ai_response(track_prompt)
-        if not analysis: return
-        icon = "🔴" if pct_num is not None and pct_num > 0 else "🟢"
-        send_tg(f"<b>👀 选股跟踪: {pick_data['name']}</b>\n\n{icon} 现价: {quote['price']} ({pct_for_prompt}%)\n\n🧠 <b>AI观点：</b>\n{analysis}")
-    except Exception as e: log_error(f"❌ 追踪失败: {e}")
+        if not analysis:
+            return
 
-def run_analysis(mode):
+        icon = "🔴" if pct_num is not None and pct_num > 0 else "🟢"
+        send_tg(
+            f"<b>👀 选股跟踪: {pick_data['name']}</b>\n\n{icon} 现价: {quote['price']} ({pct_for_prompt}%)\n\n🧠 <b>AI观点：</b>\n{analysis}"
+        )
+    except Exception as exc:
+        log_error(f"❌ 追踪失败: {exc}")
+
+
+def run_analysis(mode: str) -> None:
     log_info(f"启动：通用分析模式 [{mode}]")
     prompts = load_prompts()
-    
+
     if mode == "funds":
         top_in, top_out = get_market_funds()
-        if not top_in: return
+        if not top_in:
+            return
         in_str = "\n".join([f"- {s['name']}: {s['flow']}亿 ({s['change']})" for s in top_in])
         out_str = "\n".join([f"- {s['name']}: {s['flow']}亿 ({s['change']})" for s in top_out])
-        content = get_ai_response(prompts["funds"].format(in_str=in_str, out_str=out_str))
-        if content: send_tg(f"<b>💰 主力资金雷达</b>\n\n{content}")
+        content = get_ai_response(prompts.get("funds", settings.DEFAULT_PROMPTS["funds"]).format(in_str=in_str, out_str=out_str))
+        if content:
+            send_tg(f"<b>💰 主力资金雷达</b>\n\n{content}")
+        return
 
-    elif mode == "daily":
+    if mode == "daily":
         news = get_news(1440)
-        if not news: return
+        if not news:
+            return
         news_txt = "\n".join([f"- {n['title']}" for n in news[:30]])
-        content = get_ai_response(prompts["daily"].format(news_txt=news_txt))
-        if content: send_tg(f"<b>🌅 股市全景内参</b>\n\n{content}")
+        content = get_ai_response(prompts.get("daily", settings.DEFAULT_PROMPTS["daily"]).format(news_txt=news_txt))
+        if content:
+            send_tg(f"<b>🌅 股市全景内参</b>\n\n{content}")
+        return
 
-    elif mode == "monitor":
+    if mode == "monitor":
         news = get_news(90)
         now = datetime.now(settings.SHA_TZ)
         strict_threshold = now - timedelta(minutes=15)
         soft_threshold = now - timedelta(minutes=30)
-        high_impact_keywords = ["涨停", "跌停", "停牌", "复牌", "业绩", "并购", "重组", "回购", "增持", "减持", "政策", "降息", "AI", "算力", "芯片"]
 
-        fresh_news = []
-        for n in news:
-            if n['datetime'] >= strict_threshold:
-                fresh_news.append(n)
-            elif n['datetime'] >= soft_threshold:
-                if any(k in f"{n['title']} {n['digest']}" for k in high_impact_keywords):
-                    fresh_news.append(n)
+        fresh_news: list[dict[str, Any]] = []
+        for item in news:
+            if item["datetime"] >= strict_threshold:
+                fresh_news.append(item)
+            elif item["datetime"] >= soft_threshold and any(
+                keyword in f"{item['title']} {item['digest']}" for keyword in HIGH_IMPACT_KEYWORDS
+            ):
+                fresh_news.append(item)
 
-        if not fresh_news: return
-        dedup_news = []
-        seen = set()
-        for n in fresh_news:
-            if n['title'] not in seen:
-                seen.add(n['title'])
-                dedup_news.append(n)
+        if not fresh_news:
+            return
+
+        dedup_news: list[dict[str, Any]] = []
+        seen_titles: set[str] = set()
+        for item in fresh_news:
+            if item["title"] not in seen_titles:
+                seen_titles.add(item["title"])
+                dedup_news.append(item)
 
         news_titles = [f"{i}. {n['title']} (详情:{n['digest'][:60]})" for i, n in enumerate(dedup_news[:12])]
-        content = get_ai_response(prompts["monitor"].format(news_list="\n".join(news_titles)))
-        if not content: return
+        content = get_ai_response(prompts.get("monitor", settings.DEFAULT_PROMPTS["monitor"]).format(news_list="\n".join(news_titles)))
+        if not content:
+            return
 
-        alerts_buffer = []
+        alerts_buffer: list[str] = []
         for line in content.split("\n"):
-            if "ALERT|" in line:
-                parts = line.split("|")
-                if len(parts) >= 3:
-                    try:
-                        idx = int(re.sub(r"\D", "", parts[1]))
-                        if idx < len(dedup_news):
-                            t = dedup_news[idx]
-                            alerts_buffer.append(f"💡 <b>逻辑</b>：{parts[2]}\n📰 <a href='{t['link']}'>{t['title']}</a> ({t['time_str']})")
-                    except: continue
+            if "ALERT|" not in line:
+                continue
+            parts = line.split("|")
+            if len(parts) < 3:
+                continue
+            try:
+                idx = int(re.sub(r"\D", "", parts[1]))
+            except ValueError:
+                continue
+            if idx < len(dedup_news):
+                item = dedup_news[idx]
+                alerts_buffer.append(
+                    f"💡 <b>逻辑</b>：{parts[2]}\n📰 <a href='{item['link']}'>{item['title']}</a> ({item['time_str']})"
+                )
 
         if alerts_buffer:
             msg = "<b>🎯 机会雷达汇总</b>\n\n" + "\n\n〰️〰️〰️〰️〰️\n\n".join(alerts_buffer[:3])
-            # 🚨 强制使用副机器人参数
             send_tg(msg, token=settings.TG_BOT_TOKEN_MONITOR, chat_id=settings.TG_CHAT_ID_MONITOR)
+        return
 
-    elif mode == "global":
-        news = get_news(180) 
-        if not news: return
+    if mode == "global":
+        news = get_news(180)
+        if not news:
+            return
         news_txt = "\n".join([f"- {n['title']} (详情:{n['digest'][:40]})" for n in news[:80]])
         content = get_ai_response(prompts.get("global", settings.DEFAULT_PROMPTS["global"]).format(news_txt=news_txt))
-        
         if content and "无重大事件" not in content:
-            # 🚨 强制使用副机器人参数
             send_tg(
-                f"<b>🌐 国际宏观与板块雷达 (3H)</b>\n\n{content}", 
-                token=settings.TG_BOT_TOKEN_MONITOR, 
-                chat_id=settings.TG_CHAT_ID_MONITOR
+                f"<b>🌐 国际宏观与板块雷达 (3H)</b>\n\n{content}",
+                token=settings.TG_BOT_TOKEN_MONITOR,
+                chat_id=settings.TG_CHAT_ID_MONITOR,
             )
+        return
 
-    elif mode in ["periodic", "after_market"]:
+    if mode in ["periodic", "after_market"]:
         news = get_news(240)
-        if not news: return
+        if not news:
+            return
         news_txt = "\n".join([f"- {n['title']}" for n in news[:25]])
         title = "🌇 每日复盘" if mode == "after_market" else "🍵 盘中茶歇"
         content = get_ai_response(prompts.get(mode, settings.DEFAULT_PROMPTS[mode]).format(news_txt=news_txt))
-        if content: send_tg(f"<b>{title}</b>\n\n{content}")
+        if content:
+            send_tg(f"<b>{title}</b>\n\n{content}")
 
-def run_review():
-    if not os.path.exists(settings.HISTORY_FILE): return
+
+def run_review() -> None:
+    if not os.path.exists(settings.HISTORY_FILE):
+        return
+
     try:
-        with open(settings.HISTORY_FILE, "r", encoding="utf-8") as f: rows = list(csv.DictReader(f))
+        with open(settings.HISTORY_FILE, "r", encoding="utf-8") as file:
+            rows = list(csv.DictReader(file))
+
         recent_rows = rows[-10:] if len(rows) > 10 else rows
-        details = []
-        total_count = win_count = 0
+        details: list[str] = []
+        total_count = 0
+        win_count = 0
         total_profit = 0.0
 
         for row in recent_rows:
-            curr_quote = get_stock_quote(row['Code'])
-            if not curr_quote: continue
+            curr_quote = get_stock_quote(row["Code"])
+            if not curr_quote:
+                continue
             try:
-                start = float(row['Start_Price'])
-                curr = float(curr_quote['price'])
+                start = float(row["Start_Price"])
+                curr = float(curr_quote["price"])
                 pct = (curr - start) / start * 100
-                total_count += 1
-                total_profit += pct
-                if pct > 0: win_count += 1
-                icon = "🔴" if pct > 0 else "🟢"
-                details.append(f"{icon} <b>{row['Name']}</b>: <b>{pct:+.2f}%</b>")
-            except: continue
+            except (ValueError, TypeError, ZeroDivisionError):
+                continue
 
-        if total_count == 0: return
+            total_count += 1
+            total_profit += pct
+            if pct > 0:
+                win_count += 1
+            icon = "🔴" if pct > 0 else "🟢"
+            details.append(f"{icon} <b>{row['Name']}</b>: <b>{pct:+.2f}%</b>")
+
+        if total_count == 0:
+            return
         win_rate = (win_count / total_count) * 100
         avg_profit = total_profit / total_count
-        send_tg(f"<b>📊 AI 战绩周报</b>\n\n🏆 <b>胜率: {win_rate:.0f}%</b>\n💰 <b>平均收益: {avg_profit:+.2f}%</b>\n------------------\n" + "\n".join(details))
-    except Exception as e: log_error(f"复盘失败: {e}")
+        send_tg(
+            f"<b>📊 AI 战绩周报</b>\n\n🏆 <b>胜率: {win_rate:.0f}%</b>\n💰 <b>平均收益: {avg_profit:+.2f}%</b>\n------------------\n"
+            + "\n".join(details)
+        )
+    except Exception as exc:
+        log_error(f"复盘失败: {exc}")
