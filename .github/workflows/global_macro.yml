@@ -1,0 +1,20 @@
+name: Global Macro Radar
+
+on:
+  workflow_dispatch: # 仅接受 API 触发
+
+jobs:
+  run-macro:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - run: pip install requests openai
+      - name: Run Global Macro Mode
+        env:
+          TG_BOT_TOKEN_MONITOR: ${{ secrets.TG_BOT_TOKEN_MONITOR }}
+          TG_CHAT_ID_MONITOR: ${{ secrets.TG_CHAT_ID_MONITOR }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: python main.py global
