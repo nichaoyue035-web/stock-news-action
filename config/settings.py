@@ -24,6 +24,10 @@ USER_AGENTS = [
 ]
 
 URL_NEWS = "https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_100_1_.html"
+# 备用快讯源（非东财）：凤凰财经 RSS
+URL_NEWS_ALT = "https://rss.ifeng.com/rss/fn_finance.xml"
+# 海外消息源（Reuters 商业新闻 RSS）
+URL_NEWS_INTL = "https://feeds.reuters.com/reuters/businessNews"
 URL_FUNDS = "https://push2.eastmoney.com/api/qt/clist/get"
 URL_QUOTE = "https://push2.eastmoney.com/api/qt/stock/get"
 
