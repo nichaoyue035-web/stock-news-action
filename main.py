@@ -47,8 +47,8 @@ def main():
             # ✨ 新增：战绩复盘模式
             run_review()
 
-        elif mode in ["daily", "funds", "monitor", "periodic", "after_market"]:
-            # 通用分析模式 (早报、资金、监控、复盘)
+        elif mode in ["daily", "funds", "monitor", "periodic", "after_market", "global"]:
+            # 通用分析模式 (早报、资金、监控、复盘、宏观)
             run_analysis(mode)
 
         else:
