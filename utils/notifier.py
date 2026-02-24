@@ -10,12 +10,6 @@ logging.basicConfig(
 logger = logging.getLogger("StockBot")
 
 def send_tg(content, token=None, chat_id=None):
-    """
-    发送 Telegram 消息 (支持多账号)
-    :param token: 指定发送的 Bot Token (可选)
-    :param chat_id: 指定发送的 Chat ID (可选)
-    """
-    # 如果没传参数，默认使用主机器人配置
     use_token = token if token else settings.TG_BOT_TOKEN
     use_chat_id = chat_id if chat_id else settings.TG_CHAT_ID
 
