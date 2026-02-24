@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
-  #schedule:
-    #- cron: '*/20 * * * *'
+  # schedule:
+  #   - cron: '*/20 * * * *'
 
 jobs:
   check-news:
@@ -21,14 +21,19 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.9'
-          # 👇 删除了 cache: 'pip' 这一行，不再需要 requirements.txt
           
       - name: Install Dependencies
         run: pip install requests openai
         
       - name: Run Monitor Mode
         env:
+          # 主机器人配置 (Monitor模式虽然不用，但保留以防万一)
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          
+          # 👇 注入监控机器人配置
+          TG_BOT_TOKEN_MONITOR: ${{ secrets.TG_BOT_TOKEN_MONITOR }}
+          TG_CHAT_ID_MONITOR: ${{ secrets.TG_CHAT_ID_MONITOR }}
+          
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: python main.py monitor
