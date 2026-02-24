@@ -157,6 +157,26 @@ def run_analysis(mode):
             )
             log_info("✅ 监控消息已发送至副频道")
 
+    elif mode == "global":
+        # 抓取过去 3 小时 (180分钟) 的数据
+        news = get_news(180) 
+        if not news: return
+        
+        # 提取前 80 条新闻，为 DeepSeek 提供足够的宏观样本池
+        news_txt = "\n".join([f"- {n['title']} (详情:{n['digest'][:40]})" for n in news[:80]])
+        
+        prompt = prompts.get("global", settings.DEFAULT_PROMPTS["global"]).format(news_txt=news_txt)
+        content = get_ai_response(prompt)
+        
+        if content and "无重大事件" not in content:
+            # 🚨 必须使用 MONITOR 的配置，物理隔离发送到消息雷达频道
+            send_tg(
+                f"<b>🌐 国际宏观与板块雷达 (3H)</b>\n\n{content}", 
+                token=settings.TG_BOT_TOKEN_MONITOR, 
+                chat_id=settings.TG_CHAT_ID_MONITOR
+            )
+            log_info("✅ 宏观雷达已发送")
+
     elif mode in ["periodic", "after_market"]:
         news = get_news(240)
         if not news: return
