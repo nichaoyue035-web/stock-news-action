@@ -7,10 +7,14 @@ import re
 import time
 from datetime import timedelta
 from typing import Any, Optional
+import email.utils
+import xml.etree.ElementTree as ET
+from urllib.parse import urlparse
 
 import requests
 
 from config import settings
+from utils.ai_client import get_ai_response
 from utils.notifier import log_error
 
 
@@ -41,6 +45,165 @@ def _strip_html(text: Any) -> str:
     return re.sub(r"<[^>]+>", "", str(text or ""))
 
 
+def _parse_datetime(raw_value: Any) -> Optional[datetime.datetime]:
+    """解析常见日期格式并转换为上海时区。"""
+    text = str(raw_value or "").strip()
+    if not text:
+        return None
+
+    try:
+        parsed = email.utils.parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError):
+        parsed = None
+
+    if parsed is not None:
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=settings.SHA_TZ)
+        return parsed.astimezone(settings.SHA_TZ)
+
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            dt = datetime.datetime.strptime(text, fmt)
+            return dt.replace(tzinfo=settings.SHA_TZ) if dt.tzinfo is None else dt.astimezone(settings.SHA_TZ)
+        except ValueError:
+            continue
+    return None
+
+
+def _fetch_external_rss_news(minutes_lookback: Optional[int] = None) -> list[dict[str, Any]]:
+    """从海外+自定义 RSS 信息源获取新闻。"""
+    if not settings.EXTERNAL_NEWS_RSS:
+        return []
+
+    now = datetime.datetime.now(settings.SHA_TZ)
+    delta = timedelta(minutes=minutes_lookback if minutes_lookback else 1440)
+    time_threshold = now - delta
+
+    items: list[dict[str, Any]] = []
+    for feed_url in settings.EXTERNAL_NEWS_RSS:
+        try:
+            resp = requests.get(feed_url, headers=get_random_header(), timeout=15)
+            resp.raise_for_status()
+            root = ET.fromstring(resp.content)
+        except Exception as exc:
+            log_error(f"⚠️ 自定义信息源抓取失败 [{feed_url}]: {exc}")
+            continue
+
+        source_host = urlparse(feed_url).netloc or "custom"
+        for node in root.findall(".//item") + root.findall(".//entry"):
+            title = _strip_html(node.findtext("title"))
+            digest = _strip_html(node.findtext("description") or node.findtext("summary"))
+            link = node.findtext("link")
+            if not link:
+                link_node = node.find("link")
+                link = link_node.get("href") if link_node is not None else None
+
+            raw_time = (
+                node.findtext("pubDate")
+                or node.findtext("published")
+                or node.findtext("updated")
+                or node.findtext("dc:date")
+            )
+            news_time = _parse_datetime(raw_time)
+            if news_time is None or news_time < time_threshold:
+                continue
+
+            items.append(
+                {
+                    "title": title or (digest[:50] + "..." if len(digest) > 50 else digest),
+                    "digest": digest,
+                    "link": link or feed_url,
+                    "time_str": news_time.strftime("%H:%M"),
+                    "datetime": news_time,
+                    "source": source_host,
+                }
+            )
+    return items
+
+
+def _extract_json_object(raw_text: str) -> Optional[dict[str, Any]]:
+    """从模型返回文本中提取 JSON 对象。"""
+    match = re.search(r"\{[\s\S]*\}", str(raw_text or ""))
+    if not match:
+        return None
+    try:
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+def _normalize_external_news(news_items: list[dict[str, Any]], max_translate_items: int = 20) -> list[dict[str, Any]]:
+    """使用 DeepSeek 批量判断语言并翻译非中文新闻。"""
+    if not news_items:
+        return []
+
+    batch = news_items[:max_translate_items]
+    prompt_rows = []
+    for idx, item in enumerate(batch):
+        prompt_rows.append(
+            {
+                "idx": idx,
+                "title": str(item.get("title", "")).strip(),
+                "digest": str(item.get("digest", "")).strip(),
+            }
+        )
+
+    prompt = (
+        "请判断每条新闻是否为中文；若不是中文请翻译成简体中文。\n"
+        "仅返回 JSON，格式如下："
+        '{"items":[{"idx":0,"is_chinese":true,"title_zh":"...","digest_zh":"..."}]}\n\n'
+        f"待处理列表：{json.dumps(prompt_rows, ensure_ascii=False)}"
+    )
+
+    ai_text = get_ai_response(prompt, temperature=0.0)
+    parsed = _extract_json_object(ai_text or "")
+    mapped: dict[int, dict[str, Any]] = {}
+    if parsed and isinstance(parsed.get("items"), list):
+        for row in parsed["items"]:
+            if not isinstance(row, dict):
+                continue
+            try:
+                idx = int(row.get("idx"))
+            except (TypeError, ValueError):
+                continue
+            mapped[idx] = row
+
+    normalized: list[dict[str, Any]] = []
+    for idx, item in enumerate(batch):
+        row = mapped.get(idx)
+        if not row:
+            normalized.append(item)
+            continue
+
+        if bool(row.get("is_chinese", False)):
+            normalized.append(item)
+            continue
+
+        translated_item = dict(item)
+        translated_item["title"] = str(row.get("title_zh") or item.get("title", "")).strip()
+        translated_item["digest"] = str(row.get("digest_zh") or item.get("digest", "")).strip()
+        translated_item["translated"] = True
+        normalized.append(translated_item)
+
+    return normalized + news_items[max_translate_items:]
+
+
+def _refine_news(news_items: list[dict[str, Any]], max_items: int = 120) -> list[dict[str, Any]]:
+    """按标题去重并限制数量，输出更精简新闻流。"""
+    refined: list[dict[str, Any]] = []
+    seen_titles: set[str] = set()
+    for item in news_items:
+        title = str(item.get("title", "")).strip()
+        if not title or title in seen_titles:
+            continue
+        seen_titles.add(title)
+        refined.append(item)
+        if len(refined) >= max_items:
+            break
+    return refined
+
+
 def get_news(minutes_lookback: Optional[int] = None) -> list[dict[str, Any]]:
     """
     抓取财经快讯。
@@ -52,14 +215,15 @@ def get_news(minutes_lookback: Optional[int] = None) -> list[dict[str, Any]]:
     try:
         resp = requests.get(url, headers=get_random_header(), timeout=15)
         payload = _extract_json_payload(resp.text.strip())
-        if not payload:
-            return []
-
-        items = payload.get("LivesList", [])
-        if not isinstance(items, list):
-            return []
-
         valid_news: list[dict[str, Any]] = []
+
+        if payload:
+            items = payload.get("LivesList", [])
+            if not isinstance(items, list):
+                items = []
+        else:
+            items = []
+
         now = datetime.datetime.now(settings.SHA_TZ)
         delta = timedelta(minutes=minutes_lookback if minutes_lookback else 1440)
         time_threshold = now - delta
@@ -91,12 +255,22 @@ def get_news(minutes_lookback: Optional[int] = None) -> list[dict[str, Any]]:
                     "link": item.get("url_unique") or "https://kuaixun.eastmoney.com/",
                     "time_str": news_time.strftime("%H:%M"),
                     "datetime": news_time,
+                    "source": "eastmoney",
                 }
             )
-        return valid_news
+
+        external_news = _fetch_external_rss_news(minutes_lookback)
+        normalized_external_news = _normalize_external_news(external_news)
+
+        merged_news = valid_news + normalized_external_news
+        merged_news.sort(key=lambda x: x["datetime"], reverse=True)
+        return _refine_news(merged_news)
     except Exception as exc:
         log_error(f"❌ 新闻抓取失败: {exc}")
-        return []
+        external_news = _fetch_external_rss_news(minutes_lookback)
+        normalized_external_news = _normalize_external_news(external_news)
+        normalized_external_news.sort(key=lambda x: x["datetime"], reverse=True)
+        return _refine_news(normalized_external_news)
 
 
 def get_market_funds() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
