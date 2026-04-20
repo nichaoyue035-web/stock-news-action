@@ -27,9 +27,9 @@ URL_NEWS = "https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_100_
 URL_FUNDS = "https://push2.eastmoney.com/api/qt/clist/get"
 URL_QUOTE = "https://push2.eastmoney.com/api/qt/stock/get"
 
-
 # 海外默认信息源（可通过环境变量覆盖）
-DEFAULT_GLOBAL_RSS = "https://feeds.reuters.com/reuters/worldNews"
+# 旧地址 feeds.reuters.com 已经不稳定/失效，改为 Reuters Agency 新 feed 结构
+DEFAULT_GLOBAL_RSS = "https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best"
 GLOBAL_NEWS_RSS = os.getenv("GLOBAL_NEWS_RSS", DEFAULT_GLOBAL_RSS)
 
 # 额外信息源（RSS），支持多个地址，用英文逗号分隔。
