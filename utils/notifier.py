@@ -9,6 +9,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("StockBot")
 
+def log_error(message):
+    logger.error(message)
+
 def send_tg(content, token=None, chat_id=None):
     use_token = token if token else settings.TG_BOT_TOKEN
     use_chat_id = chat_id if chat_id else settings.TG_CHAT_ID
