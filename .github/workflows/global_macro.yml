@@ -11,7 +11,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.9'
-      - run: pip install requests openai
+      - run: pip install -r requirements.txt
       - name: Run Global Macro Mode
         env:
           TG_BOT_TOKEN_MONITOR: ${{ secrets.TG_BOT_TOKEN_MONITOR }}

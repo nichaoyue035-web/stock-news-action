@@ -1,2 +1,2 @@
-requests
-openai
+requests==2.33.1
+openai==2.34.0
