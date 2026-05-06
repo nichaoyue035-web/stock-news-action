@@ -21,7 +21,10 @@ jobs:
           python-version: '3.9'
           
       - name: Install Dependencies
-        run: pip install requests openai
+        run: pip install -r requirements.txt
+
+      - name: Pull Latest Changes
+        run: git pull --rebase
         
       # 1. 运行早报 (不影响选股)
       - name: Run Daily News
@@ -46,12 +49,13 @@ jobs:
           git config --global user.name 'GitHub Actions'
           git config --global user.email 'actions@github.com'
           
-          # 先拉取最新代码，防止多人操作导致冲突
-          git pull --rebase || echo "No remote changes"
-
           # 强制添加这两个文件 (如果文件不存在也不会报错)
           git add stock_pick.json history.csv || true
           
-          # 提交并推送
-          git commit -m "Update Daily Stock Pick & History [skip ci]" || echo "No changes to commit"
-          git push
+          # 仅在有实际变化时提交并推送
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update Daily Stock Pick & History [skip ci]"
+            git push
+          fi

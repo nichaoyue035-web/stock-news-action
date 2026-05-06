@@ -22,11 +22,34 @@ SUPPORTED_ANALYSIS_MODES: Final[set[str]] = {
     "global",
 }
 
+REQUIRED_ENV_BY_MODE: Final[dict[str, tuple[str, ...]]] = {
+    "daily": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN", "TG_CHAT_ID"),
+    "funds": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN", "TG_CHAT_ID"),
+    "periodic": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN", "TG_CHAT_ID"),
+    "after_market": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN", "TG_CHAT_ID"),
+    "recommend": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN", "TG_CHAT_ID"),
+    "track": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN", "TG_CHAT_ID"),
+    "review": ("TG_BOT_TOKEN", "TG_CHAT_ID"),
+    "monitor": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN_MONITOR", "TG_CHAT_ID_MONITOR"),
+    "global": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN_MONITOR", "TG_CHAT_ID_MONITOR"),
+}
+
 
 def _fatal(message: str) -> NoReturn:
     """Print fatal error and exit with code 1."""
     print(message)
     raise SystemExit(1)
+
+
+def _validate_required_env(mode: str) -> None:
+    """Fail fast when required environment variables are missing for a run mode."""
+    required_names = REQUIRED_ENV_BY_MODE.get(mode)
+    if not required_names:
+        return
+
+    missing = [name for name in required_names if not os.getenv(name)]
+    if missing:
+        _fatal(f"❌ 缺少必要环境变量/Secrets ({mode}): {', '.join(missing)}")
 
 
 def _bootstrap_modules() -> Tuple[SimpleRunner, SimpleRunner, AnalysisRunner, SimpleRunner, Logger, Logger]:
@@ -48,6 +71,7 @@ def _resolve_mode(argv: list[str]) -> str:
 def main() -> None:
     """Program dispatcher for all runtime modes."""
     mode = _resolve_mode(sys.argv)
+    _validate_required_env(mode)
     run_recommend, run_track, run_analysis, run_review, log_info, log_error = _bootstrap_modules()
     log_info(f"🚀 指挥中心启动 | 目标模式: [{mode}]")
 
