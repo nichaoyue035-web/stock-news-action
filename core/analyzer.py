@@ -135,7 +135,7 @@ def run_recommend() -> None:
 
     _append_history(pick_data, quote["price"])
     send_tg(
-        f"<b>🎯 今日AI精选 (Pro版)</b>\n\n🦄 <b>{pick_data['name']} ({pick_data['code']})</b>\n当前价: {quote['price']}\n\n📝 <b>逻辑：</b>\n{pick_data['reason']}"
+        f"🎯 今日AI精选 (Pro版)\n\n🦄 {pick_data['name']} ({pick_data['code']})\n当前价: {quote['price']}\n\n📝 逻辑：\n{pick_data['reason']}"
     )
 
 
@@ -169,7 +169,7 @@ def run_track() -> None:
 
         icon = "🔴" if pct_num is not None and pct_num > 0 else "🟢"
         send_tg(
-            f"<b>👀 选股跟踪: {pick_data['name']}</b>\n\n{icon} 现价: {quote['price']} ({pct_for_prompt}%)\n\n🧠 <b>AI观点：</b>\n{analysis}"
+            f"👀 选股跟踪: {pick_data['name']}\n\n{icon} 现价: {quote['price']} ({pct_for_prompt}%)\n\n🧠 AI观点：\n{analysis}"
         )
     except Exception as exc:
         log_error(f"❌ 追踪失败: {exc}")
@@ -187,7 +187,7 @@ def run_analysis(mode: str) -> None:
         out_str = "\n".join([f"- {s['name']}: {s['flow']}亿 ({s['change']})" for s in top_out])
         content = get_ai_response(prompts.get("funds", settings.DEFAULT_PROMPTS["funds"]).format(in_str=in_str, out_str=out_str))
         if content:
-            send_tg(f"<b>💰 主力资金雷达</b>\n\n{content}")
+            send_tg(f"💰 主力资金雷达\n\n{content}")
         return
 
     if mode == "daily":
@@ -197,7 +197,7 @@ def run_analysis(mode: str) -> None:
         news_txt = "\n".join([f"- [{n.get('source', 'unknown')}] {n['title']}" for n in news[:30]])
         content = get_ai_response(prompts.get("daily", settings.DEFAULT_PROMPTS["daily"]).format(news_txt=news_txt))
         if content:
-            send_tg(f"<b>🌅 股市全景内参</b>\n\n{content}")
+            send_tg(f"🌅 股市全景内参\n\n{content}")
         return
 
     if mode == "monitor":
@@ -231,6 +231,7 @@ def run_analysis(mode: str) -> None:
             return
 
         alerts_buffer: list[str] = []
+        alert_links: list[str] = []
         for line in content.split("\n"):
             if "ALERT|" not in line:
                 continue
@@ -244,11 +245,14 @@ def run_analysis(mode: str) -> None:
             if idx < len(dedup_news):
                 item = dedup_news[idx]
                 alerts_buffer.append(
-                    f"💡 <b>逻辑</b>：{parts[2]}\n📰 <a href='{item['link']}'>{item['title']}</a> ({item['time_str']})"
+                    f"💡 逻辑：{parts[2]}\n📰 {item['title']} ({item['time_str']})"
                 )
+                alert_links.append(str(item["link"]))
 
         if alerts_buffer:
-            msg = "<b>🎯 机会雷达汇总</b>\n\n" + "\n\n〰️〰️〰️〰️〰️\n\n".join(alerts_buffer[:3])
+            msg = "🎯 机会雷达汇总\n\n" + "\n\n〰️〰️〰️〰️〰️\n\n".join(alerts_buffer[:3])
+            if alert_links[:3]:
+                msg += "\n\n链接：\n" + "\n".join(alert_links[:3])
             send_tg(msg, token=settings.TG_BOT_TOKEN_MONITOR, chat_id=settings.TG_CHAT_ID_MONITOR)
         return
 
@@ -260,7 +264,7 @@ def run_analysis(mode: str) -> None:
         content = get_ai_response(prompts.get("global", settings.DEFAULT_PROMPTS["global"]).format(news_txt=news_txt))
         if content and "无重大事件" not in content:
             send_tg(
-                f"<b>🌐 国际宏观与板块雷达 (3H)</b>\n\n{content}",
+                f"🌐 国际宏观与板块雷达 (3H)\n\n{content}",
                 token=settings.TG_BOT_TOKEN_MONITOR,
                 chat_id=settings.TG_CHAT_ID_MONITOR,
             )
@@ -274,7 +278,7 @@ def run_analysis(mode: str) -> None:
         title = "🌇 每日复盘" if mode == "after_market" else "🍵 盘中茶歇"
         content = get_ai_response(prompts.get(mode, settings.DEFAULT_PROMPTS[mode]).format(news_txt=news_txt))
         if content:
-            send_tg(f"<b>{title}</b>\n\n{content}")
+            send_tg(f"{title}\n\n{content}")
 
 
 def run_review() -> None:
@@ -307,14 +311,14 @@ def run_review() -> None:
             if pct > 0:
                 win_count += 1
             icon = "🔴" if pct > 0 else "🟢"
-            details.append(f"{icon} <b>{row['Name']}</b>: <b>{pct:+.2f}%</b>")
+            details.append(f"{icon} {row['Name']}: {pct:+.2f}%")
 
         if total_count == 0:
             return
         win_rate = (win_count / total_count) * 100
         avg_profit = total_profit / total_count
         send_tg(
-            f"<b>📊 AI 战绩周报</b>\n\n🏆 <b>胜率: {win_rate:.0f}%</b>\n💰 <b>平均收益: {avg_profit:+.2f}%</b>\n------------------\n"
+            f"📊 AI 战绩周报\n\n🏆 胜率: {win_rate:.0f}%\n💰 平均收益: {avg_profit:+.2f}%\n------------------\n"
             + "\n".join(details)
         )
     except Exception as exc:

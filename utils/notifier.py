@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import logging
 import os
+import re
 from typing import Iterable
 
 import requests
@@ -36,10 +37,36 @@ def _raise_in_ci(message: str) -> None:
         raise RuntimeError(message)
 
 
-def _prepare_content(content, parse_mode: str | None) -> str:
-    text = str(content)
-    if parse_mode and parse_mode.upper() == "HTML":
-        return html.escape(text, quote=False)
+def _prepare_content(content) -> str:
+    """Return Telegram-safe plain text without HTML/Markdown markup."""
+    text = html.unescape(str(content))
+    extracted_links: list[str] = []
+
+    def _replace_anchor(match: re.Match[str]) -> str:
+        url = match.group(2).strip()
+        label = re.sub(r"<[^>]*>", "", match.group(3)).strip()
+        if url:
+            extracted_links.append(url)
+        return label or url
+
+    text = re.sub(
+        r"<a\s+[^>]*href\s*=\s*(['\"])(.*?)\1[^>]*>(.*?)</a>",
+        _replace_anchor,
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    text = re.sub(r"<[^>]*>", "", text)
+    text = re.sub(r"[<>]", "", text)
+    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
+    text = re.sub(r"__(.*?)__", r"\1", text)
+
+    unique_links = []
+    for link in extracted_links:
+        if link and link not in text and link not in unique_links:
+            unique_links.append(link)
+    if unique_links:
+        text = text.rstrip() + "\n\n链接：\n" + "\n".join(unique_links)
+
     return text
 
 
@@ -66,7 +93,7 @@ def _split_message(content: str, max_length: int = SAFE_TELEGRAM_CHUNK_LENGTH) -
         remaining = remaining[split_at:].lstrip()
 
 
-def send_tg(content, token=None, chat_id=None, parse_mode="HTML"):
+def send_tg(content, token=None, chat_id=None):
     use_token = token if token else settings.TG_BOT_TOKEN
     use_chat_id = chat_id if chat_id else settings.TG_CHAT_ID
 
@@ -77,7 +104,7 @@ def send_tg(content, token=None, chat_id=None, parse_mode="HTML"):
         return
 
     url = f"https://api.telegram.org/bot{use_token}/sendMessage"
-    safe_content = _prepare_content(content, parse_mode)
+    safe_content = _prepare_content(content)
     chunks = list(_split_message(safe_content))
 
     for index, chunk in enumerate(chunks, start=1):
@@ -86,9 +113,6 @@ def send_tg(content, token=None, chat_id=None, parse_mode="HTML"):
             "text": chunk,
             "disable_web_page_preview": True
         }
-        if parse_mode:
-            payload["parse_mode"] = parse_mode
-
         try:
             resp = requests.post(url, json=payload, timeout=10)
         except requests.RequestException as exc:
