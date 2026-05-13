@@ -35,5 +35,6 @@ jobs:
           TG_BOT_TOKEN_MONITOR: ${{ secrets.TG_BOT_TOKEN_MONITOR }}
           TG_CHAT_ID_MONITOR: ${{ secrets.TG_CHAT_ID_MONITOR }}
           
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GLOBAL_NEWS_RSS: ${{ secrets.GLOBAL_NEWS_RSS }}
+          CUSTOM_NEWS_RSS: ${{ secrets.CUSTOM_NEWS_RSS }}
         run: python main.py monitor
