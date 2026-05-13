@@ -367,10 +367,12 @@ def _format_market_message(
     links: str = "未知",
     market_scope: str = "其他",
     related_sectors: Any = None,
+    include_title: bool = True,
 ) -> str:
     """Build a stable Telegram information template."""
+    title_prefix = f"📌 {title}\n\n" if include_title else ""
     message = (
-        f"📌 {title}\n\n"
+        f"{title_prefix}"
         f"【时间】{report_time or '未知'}\n"
         f"【来源】{source or '未知'}\n"
         f"【分类】{_display_category(category)}\n"
@@ -679,11 +681,12 @@ def run_analysis(mode: str) -> None:
                         links=link or "未知",
                         market_scope=str(item.get("market_scope") or "其他"),
                         related_sectors=item.get("related_sectors"),
+                        include_title=False,
                     )
                 )
 
         if alerts_buffer:
-            msg = "\n\n".join(alerts_buffer[:3])
+            msg = "📌 市场信息摘要\n\n" + "\n\n〰️〰️〰️\n\n".join(alerts_buffer[:3])
             if _has_effective_content(msg):
                 send_tg(
                     msg,
