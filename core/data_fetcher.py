@@ -674,6 +674,61 @@ def _refine_news(
     return refined
 
 
+def _deduplicate_semantic_news(
+    news_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """让 DeepSeek 通读新闻列表，删除含义相同的国内外新闻。"""
+    if len(news_items) <= 1:
+        return news_items
+
+    prompt_rows = []
+    for idx, item in enumerate(news_items):
+        prompt_rows.append(
+            {
+                "idx": idx,
+                "source": str(item.get("source") or "unknown")[:40],
+                "time": str(item.get("time_str") or "")[:20],
+                "title": str(item.get("title") or "").strip()[:160],
+                "digest": str(item.get("digest") or "").strip()[:220],
+            }
+        )
+
+    prompt = (
+        "请通读以下市场新闻列表，不区分海外新闻或国内新闻，删除含义相同、事实主体相同、"
+        "只是来源/措辞/翻译不同的重复新闻。保留时间更新、信息量更完整或影响更直接的一条。"
+        "不要删除只是同一主题但事实进展不同的新闻。\n"
+        "仅返回 JSON，格式：{\"keep\":[0,2,5]}，keep 为需要保留的 idx，按原列表顺序排列。\n\n"
+        f"待去重列表：{json.dumps(prompt_rows, ensure_ascii=False)}"
+    )
+
+    ai_text = get_ai_response(prompt, temperature=0.0)
+    parsed = _extract_json_object(ai_text or "")
+    raw_keep = parsed.get("keep") if parsed else None
+    if not isinstance(raw_keep, list):
+        log_error("⚠️ DeepSeek 语义去重返回格式异常，使用标题去重结果")
+        return news_items
+
+    keep_indexes: list[int] = []
+    seen_indexes: set[int] = set()
+    for raw_idx in raw_keep:
+        try:
+            idx = int(raw_idx)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= idx < len(news_items) and idx not in seen_indexes:
+            seen_indexes.add(idx)
+            keep_indexes.append(idx)
+
+    if not keep_indexes:
+        log_error("⚠️ DeepSeek 语义去重未返回有效索引，使用标题去重结果")
+        return news_items
+
+    keep_indexes.sort()
+    if len(keep_indexes) < len(news_items):
+        log_info(f"DeepSeek 语义去重：{len(news_items)} -> {len(keep_indexes)}")
+    return [news_items[idx] for idx in keep_indexes]
+
+
 def get_news(minutes_lookback: Optional[int] = None) -> list[dict[str, Any]]:
     """
     抓取财经快讯。
@@ -741,7 +796,8 @@ def get_news(minutes_lookback: Optional[int] = None) -> list[dict[str, Any]]:
 
         merged_news = valid_news + normalized_external_news
         merged_news.sort(key=lambda x: x["datetime"], reverse=True)
-        return enrich_news_items(_refine_news(merged_news))
+        refined_news = _deduplicate_semantic_news(_refine_news(merged_news))
+        return enrich_news_items(refined_news)
     except Exception as exc:
         reason = _redact_sensitive_text(exc)
         record_data_source_health("东方财富快讯", "failed", reason, 0)
@@ -749,7 +805,10 @@ def get_news(minutes_lookback: Optional[int] = None) -> list[dict[str, Any]]:
         external_news = _fetch_external_rss_news(minutes_lookback)
         normalized_external_news = _normalize_external_news(external_news)
         normalized_external_news.sort(key=lambda x: x["datetime"], reverse=True)
-        return enrich_news_items(_refine_news(normalized_external_news))
+        refined_news = _deduplicate_semantic_news(
+            _refine_news(normalized_external_news)
+        )
+        return enrich_news_items(refined_news)
 
 
 def get_market_funds() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
