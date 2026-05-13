@@ -199,7 +199,7 @@ def _format_links(links: list[Any], max_links: int = 5) -> str:
 
 
 def _format_source_health_line(name: str, state: dict[str, Any]) -> str:
-    """Format one data source health record for fallback Telegram messages."""
+    """Format one data source health record for console diagnostics."""
     status = str(state.get("status") or "unknown")
     detail = str(state.get("detail") or "").strip()
     count = state.get("count")
@@ -223,36 +223,26 @@ def _format_source_health_line(name: str, state: dict[str, Any]) -> str:
 
 
 def _format_health_status_message(reason: str) -> str:
-    """Build a concise health-only message for no-content or failed runs."""
+    """Build concise console-only diagnostics for no-content or failed runs."""
     health = get_data_source_health()
     if "DeepSeek" not in health:
         health["DeepSeek"] = {"status": "skipped", "detail": "未调用", "count": None}
 
-    lines = [
-        "⚠️ 本次没有生成有效市场信息",
-        "",
-        "可能原因：",
-    ]
+    lines = ["数据源状态："]
     lines.extend(
         _format_source_health_line(name, state) for name, state in health.items()
     )
     if reason:
         lines.append(f"- 结果：{reason}")
-    lines.extend(
-        [
-            "",
-            "建议：",
-            "请稍后重试，或检查数据源 / RSS / API 配置。",
-        ]
-    )
     return "\n".join(lines)
 
 
 def _send_health_status(
     reason: str, token: str | None = None, chat_id: str | None = None
 ) -> None:
-    """Send data source health only when normal market content is unavailable."""
-    send_tg(_format_health_status_message(reason), token=token, chat_id=chat_id)
+    """Log health diagnostics without sending no-content Telegram messages."""
+    _ = (token, chat_id)
+    log_info(_format_health_status_message(reason))
 
 
 def _get_ai_response_with_health(*args, **kwargs) -> Optional[str]:
