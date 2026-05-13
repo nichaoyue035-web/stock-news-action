@@ -32,13 +32,18 @@ URL_QUOTE = "https://push2.eastmoney.com/api/qt/stock/get"
 DEFAULT_GLOBAL_RSS = (
     "https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best"
 )
-GLOBAL_NEWS_RSS = os.getenv("GLOBAL_NEWS_RSS", DEFAULT_GLOBAL_RSS)
+GLOBAL_NEWS_RSS = os.getenv("GLOBAL_NEWS_RSS", DEFAULT_GLOBAL_RSS).strip()
 
-# 额外信息源（RSS），支持多个地址，用英文逗号分隔。
+
+def _parse_rss_url_list(raw_value):
+    """Parse comma-separated RSS URLs, tolerating Chinese commas and spaces."""
+    normalized = str(raw_value or "").replace("，", ",")
+    return [url.strip() for url in normalized.split(",") if url.strip()]
+
+
+# 额外信息源（RSS），支持多个地址，用英文逗号或中文逗号分隔。
 # 示例：https://example.com/feed.xml,https://another-site.com/rss
-CUSTOM_NEWS_RSS = [
-    url.strip() for url in os.getenv("CUSTOM_NEWS_RSS", "").split(",") if url.strip()
-]
+CUSTOM_NEWS_RSS = _parse_rss_url_list(os.getenv("CUSTOM_NEWS_RSS", ""))
 
 # 合并后的外部信息源列表（海外 + 自定义）
 EXTERNAL_NEWS_RSS = [url for url in [GLOBAL_NEWS_RSS, *CUSTOM_NEWS_RSS] if url]
