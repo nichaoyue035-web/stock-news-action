@@ -27,5 +27,7 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GLOBAL_NEWS_RSS: ${{ secrets.GLOBAL_NEWS_RSS }}
+          CUSTOM_NEWS_RSS: ${{ secrets.CUSTOM_NEWS_RSS }}
         # 运行 funds 模式
         run: python main.py funds
