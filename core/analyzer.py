@@ -271,14 +271,33 @@ def run_analysis(mode: str) -> None:
         return
 
     if mode in ["periodic", "after_market"]:
+        now = datetime.now(settings.SHA_TZ)
+        if mode == "after_market" and now.weekday() >= 5:
+            log_info("周末跳过：每日复盘不发送")
+            return
+
         news = get_news(240)
         if not news:
             return
-        news_txt = "\n".join([f"- [{n.get('source', 'unknown')}] {n['title']}" for n in news[:25]])
+
+        if mode == "after_market":
+            news_txt = "\n".join(
+                [f"- [{n.get('source', 'unknown')}] {n.get('time_str', '')} {n['title']}" for n in news[:25]]
+            )
+        else:
+            news_txt = "\n".join([f"- [{n.get('source', 'unknown')}] {n['title']}" for n in news[:25]])
+
         title = "🌇 每日复盘" if mode == "after_market" else "🍵 盘中茶歇"
-        content = get_ai_response(prompts.get(mode, settings.DEFAULT_PROMPTS[mode]).format(news_txt=news_txt))
+        content = get_ai_response(
+            prompts.get(mode, settings.DEFAULT_PROMPTS[mode]).format(
+                news_txt=news_txt,
+                report_date=now.strftime("%Y-%m-%d"),
+                report_time=now.strftime("%Y-%m-%d %H:%M"),
+            )
+        )
         if content:
-            send_tg(f"{title}\n\n{content}")
+            message_title = f"{title} ({now.strftime('%Y-%m-%d')})" if mode == "after_market" else title
+            send_tg(f"{message_title}\n\n{content}")
 
 
 def run_review() -> None:
