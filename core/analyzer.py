@@ -35,6 +35,23 @@ HIGH_IMPACT_KEYWORDS: tuple[str, ...] = (
     "芯片",
 )
 
+CATEGORY_LABELS: dict[str, str] = {
+    "macro": "宏观",
+    "policy": "政策",
+    "industry": "行业",
+    "company": "公司",
+    "capital_flow": "资金",
+    "overseas": "海外",
+    "market_sentiment": "情绪",
+    "other": "其他",
+}
+
+IMPORTANCE_LABELS: dict[str, str] = {
+    "high": "高",
+    "medium": "中",
+    "low": "低",
+}
+
 
 def load_prompts() -> dict[str, str]:
     """Load prompt templates from file; fallback to defaults on any error."""
@@ -124,6 +141,40 @@ def _format_news_time(item: dict[str, Any]) -> str:
     return str(item.get("time_str") or "未知")
 
 
+def _display_category(value: Any) -> str:
+    """Display category codes as Chinese labels, preserving custom labels."""
+    text = str(value or "other").strip()
+    return CATEGORY_LABELS.get(text, text or "其他")
+
+
+def _display_importance(value: Any) -> str:
+    """Display importance codes as Chinese labels, preserving detailed text."""
+    text = str(value or "medium").strip()
+    return IMPORTANCE_LABELS.get(text, text or "中")
+
+
+def _format_related_sectors(value: Any) -> str:
+    """Format optional sector tags without failing on legacy data."""
+    if isinstance(value, list):
+        sectors = [str(item).strip() for item in value if str(item).strip()]
+        return "、".join(sectors[:6]) if sectors else "其他"
+    text = str(value or "").strip()
+    return text or "其他"
+
+
+def _format_news_prompt_line(item: dict[str, Any], include_time: bool = True) -> str:
+    """Render one news item with structured tags for prompts and summaries."""
+    source = str(item.get("source") or "unknown")
+    time_part = f" {item.get('time_str', '')}" if include_time else ""
+    tags = (
+        f"分类:{_display_category(item.get('category'))} / "
+        f"重要性:{_display_importance(item.get('importance'))} / "
+        f"范围:{item.get('market_scope') or '其他'}"
+    )
+    sectors = _format_related_sectors(item.get("related_sectors"))
+    return f"- [{source}]{time_part} [{tags} / 板块:{sectors}] {item.get('title', '')}"
+
+
 def _format_sources(news: list[dict[str, Any]], fallback: str = "未知") -> str:
     """Format known news sources for Telegram metadata."""
     sources: list[str] = []
@@ -146,6 +197,9 @@ def _format_links(links: list[Any], max_links: int = 5) -> str:
 
 def _infer_news_category(item: dict[str, Any]) -> str:
     """Infer a lightweight display category from existing news text."""
+    if item.get("category"):
+        return _display_category(item.get("category"))
+
     text = f"{item.get('title', '')} {item.get('digest', '')}"
     if any(keyword in text for keyword in ("政策", "监管", "国务院", "央行", "证监会")):
         return "政策"
@@ -170,6 +224,9 @@ def _infer_news_category(item: dict[str, Any]) -> str:
 
 def _infer_market_importance(item: dict[str, Any]) -> str:
     """Estimate importance by market/sector impact, not single-company relevance."""
+    if item.get("importance"):
+        return _display_importance(item.get("importance"))
+
     text = f"{item.get('title', '')} {item.get('digest', '')}"
     market_keywords = (
         "国务院",
@@ -243,14 +300,18 @@ def _format_market_message(
     summary: str,
     impact: str = "见上方摘要",
     links: str = "未知",
+    market_scope: str = "其他",
+    related_sectors: Any = None,
 ) -> str:
     """Build a stable Telegram information template."""
     message = (
         f"📌 {title}\n\n"
         f"【时间】{report_time or '未知'}\n"
         f"【来源】{source or '未知'}\n"
-        f"【分类】{category or '其他'}\n"
-        f"【重要性】{importance or '中'}\n"
+        f"【分类】{_display_category(category)}\n"
+        f"【重要性】{_display_importance(importance)}\n"
+        f"【影响范围】{market_scope or '其他'}\n"
+        f"【相关板块】{_format_related_sectors(related_sectors)}\n"
         f"【摘要】{_soften_trading_language(summary)}\n"
         f"【可能影响】{_soften_trading_language(impact)}\n"
         f"【原文链接】{links or '未知'}"
@@ -271,7 +332,9 @@ def run_recommend() -> None:
         ]
     )
     news = get_news(720)
-    news_txt = "\n".join([f"- {n['title']}" for n in news[:15]])
+    news_txt = "\n".join(
+        [_format_news_prompt_line(n, include_time=False) for n in news[:15]]
+    )
     base_prompt = (
         "你是极其理性的量化交易员。请从下方的【候选股票列表】中，挑选唯一一只最符合当前市场热点和新闻面的股票。\n\n"
         f"【候选股票列表】:\n{candidates_str}\n\n【近期新闻】:\n{news_txt}\n\n"
@@ -376,10 +439,7 @@ def run_analysis(mode: str) -> None:
         )
         news = get_news(720)
         news_txt = "\n".join(
-            [
-                f"- [{n.get('source', 'unknown')}] {n.get('time_str', '')} {n['title']}"
-                for n in news[:20]
-            ]
+            [_format_news_prompt_line(n, include_time=True) for n in news[:20]]
         )
         content = get_ai_response(
             prompts.get("funds", settings.DEFAULT_PROMPTS["funds"]).format(
@@ -397,11 +457,13 @@ def run_analysis(mode: str) -> None:
                     "主力资金雷达",
                     report_time=now.strftime("%Y-%m-%d %H:%M"),
                     source=_format_sources(news, "东方财富资金流 / 新闻源"),
-                    category="资金",
-                    importance="中（板块级）",
+                    category="capital_flow",
+                    importance="medium",
                     summary=content,
                     impact="结合行业资金流、板块涨跌和近期消息，仅作市场观察参考。",
                     links=_format_links([item.get("link") for item in news[:5]]),
+                    market_scope="行业",
+                    related_sectors=[s["name"] for s in top_in[:3]],
                 )
             )
         return
@@ -412,10 +474,7 @@ def run_analysis(mode: str) -> None:
         if not news:
             return
         news_txt = "\n".join(
-            [
-                f"- [{n.get('source', 'unknown')}] {n.get('time_str', '')} {n['title']}"
-                for n in news[:30]
-            ]
+            [_format_news_prompt_line(n, include_time=True) for n in news[:30]]
         )
         content = get_ai_response(
             prompts.get("daily", settings.DEFAULT_PROMPTS["daily"]).format(
@@ -431,11 +490,17 @@ def run_analysis(mode: str) -> None:
                     "今日市场信息摘要",
                     report_time=now.strftime("%Y-%m-%d %H:%M"),
                     source=_format_sources(news, "东方财富 / RSS"),
-                    category="综合",
-                    importance="中（市场汇总）",
+                    category="other",
+                    importance="medium",
                     summary=content,
                     impact="用于快速了解市场主线、情绪和风险偏好，不构成买卖依据。",
                     links=_format_links([item.get("link") for item in news[:5]]),
+                    market_scope="A股",
+                    related_sectors=[
+                        sector
+                        for item in news[:20]
+                        for sector in item.get("related_sectors", [])
+                    ][:6],
                 )
             )
         return
@@ -467,7 +532,13 @@ def run_analysis(mode: str) -> None:
                 dedup_news.append(item)
 
         news_titles = [
-            f"{i}. [{n.get('source', 'unknown')}] {n['title']} (详情:{n['digest'][:60]})"
+            (
+                f"{i}. [{n.get('source', 'unknown')}] "
+                f"[分类:{_display_category(n.get('category'))} / "
+                f"重要性:{_display_importance(n.get('importance'))} / "
+                f"范围:{n.get('market_scope') or '其他'}] "
+                f"{n['title']} (详情:{n['digest'][:60]})"
+            )
             for i, n in enumerate(dedup_news[:12])
         ]
         content = get_ai_response(
@@ -502,6 +573,8 @@ def run_analysis(mode: str) -> None:
                         summary=str(item.get("title") or "未知"),
                         impact=parts[2],
                         links=link or "未知",
+                        market_scope=str(item.get("market_scope") or "其他"),
+                        related_sectors=item.get("related_sectors"),
                     )
                 )
 
@@ -520,7 +593,7 @@ def run_analysis(mode: str) -> None:
             return
         news_txt = "\n".join(
             [
-                f"- [{n.get('source', 'unknown')}] {n['title']} (详情:{n['digest'][:40]})"
+                f"{_format_news_prompt_line(n, include_time=False)} (详情:{n['digest'][:40]})"
                 for n in news[:80]
             ]
         )
@@ -536,11 +609,17 @@ def run_analysis(mode: str) -> None:
                     "国际宏观与板块雷达",
                     report_time=now.strftime("%Y-%m-%d %H:%M"),
                     source=_format_sources(news, "Reuters / RSS"),
-                    category="海外",
-                    importance="中（市场/板块级）",
+                    category="overseas",
+                    importance="medium",
                     summary=content,
                     impact="用于观察海外事件对全球市场、A股映射板块和风险偏好的可能影响。",
                     links=_format_links([item.get("link") for item in news[:5]]),
+                    market_scope="全球",
+                    related_sectors=[
+                        sector
+                        for item in news[:20]
+                        for sector in item.get("related_sectors", [])
+                    ][:6],
                 ),
                 token=settings.TG_BOT_TOKEN_MONITOR,
                 chat_id=settings.TG_CHAT_ID_MONITOR,
@@ -559,14 +638,11 @@ def run_analysis(mode: str) -> None:
 
         if mode == "after_market":
             news_txt = "\n".join(
-                [
-                    f"- [{n.get('source', 'unknown')}] {n.get('time_str', '')} {n['title']}"
-                    for n in news[:25]
-                ]
+                [_format_news_prompt_line(n, include_time=True) for n in news[:25]]
             )
         else:
             news_txt = "\n".join(
-                [f"- [{n.get('source', 'unknown')}] {n['title']}" for n in news[:25]]
+                [_format_news_prompt_line(n, include_time=False) for n in news[:25]]
             )
 
         title = "🌇 每日复盘" if mode == "after_market" else "🍵 盘中茶歇"
