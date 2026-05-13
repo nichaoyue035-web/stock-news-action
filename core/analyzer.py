@@ -102,6 +102,102 @@ def _safe_pct_value(raw_pct: Any) -> tuple[Optional[float], str]:
         return None, text
 
 
+def _soften_trading_language(text: Any) -> str:
+    """Soften direct trading words in Telegram-facing text."""
+    softened = str(text or "").strip()
+    replacements = {
+        "买入": "关注",
+        "卖出": "降低关注",
+        "满仓": "高风险集中关注",
+        "梭哈": "高风险集中关注",
+    }
+    for raw, replacement in replacements.items():
+        softened = softened.replace(raw, replacement)
+    return softened
+
+
+def _format_news_time(item: dict[str, Any]) -> str:
+    """Return a safe news timestamp for Telegram display without inventing data."""
+    news_time = item.get("datetime")
+    if hasattr(news_time, "strftime"):
+        return news_time.strftime("%Y-%m-%d %H:%M")
+    return str(item.get("time_str") or "未知")
+
+
+def _format_sources(news: list[dict[str, Any]], fallback: str = "未知") -> str:
+    """Format known news sources for Telegram metadata."""
+    sources: list[str] = []
+    for item in news:
+        source = str(item.get("source") or "").strip()
+        if source and source not in sources:
+            sources.append(source)
+    return " / ".join(sources[:4]) if sources else fallback
+
+
+def _format_links(links: list[Any], max_links: int = 5) -> str:
+    """Format real links only; never fabricate missing URLs."""
+    unique_links: list[str] = []
+    for link in links:
+        text = str(link or "").strip()
+        if text and text not in unique_links:
+            unique_links.append(text)
+    return "\n".join(unique_links[:max_links]) if unique_links else "未知"
+
+
+def _infer_news_category(item: dict[str, Any]) -> str:
+    """Infer a lightweight display category from existing news text."""
+    text = f"{item.get('title', '')} {item.get('digest', '')}"
+    if any(keyword in text for keyword in ("政策", "监管", "国务院", "央行", "证监会")):
+        return "政策"
+    if any(keyword in text for keyword in ("资金", "主力", "流入", "流出", "融资")):
+        return "资金"
+    if any(
+        keyword in text for keyword in ("美股", "海外", "全球", "Reuters", "reuters")
+    ):
+        return "海外"
+    if any(
+        keyword in text for keyword in ("公司", "业绩", "公告", "增持", "减持", "回购")
+    ):
+        return "公司"
+    if any(
+        keyword in text for keyword in ("行业", "板块", "产业", "AI", "芯片", "算力")
+    ):
+        return "行业"
+    if any(keyword in text for keyword in ("降息", "通胀", "汇率", "宏观")):
+        return "宏观"
+    return "其他"
+
+
+def _format_market_message(
+    title: str,
+    *,
+    report_time: str,
+    source: str,
+    category: str,
+    importance: str,
+    summary: str,
+    impact: str = "见上方摘要",
+    links: str = "未知",
+    include_risk_tip: bool = True,
+) -> str:
+    """Build a stable Telegram information template."""
+    message = (
+        "====================\n"
+        f"📌 {title}\n"
+        "====================\n\n"
+        f"【时间】{report_time or '未知'}\n"
+        f"【来源】{source or '未知'}\n"
+        f"【分类】{category or '其他'}\n"
+        f"【重要性】{importance or '中'}\n"
+        f"【摘要】{_soften_trading_language(summary)}\n"
+        f"【可能影响】{_soften_trading_language(impact)}\n"
+        f"【原文链接】{links or '未知'}"
+    )
+    if include_risk_tip:
+        message += "\n\n【风险提示】数据可能延迟；AI 摘要可能有误；重要信息需人工核查。"
+    return message
+
+
 def run_recommend() -> None:
     log_info("启动：AI 选股推荐")
     candidates = get_hot_stocks_data()
@@ -142,8 +238,18 @@ def run_recommend() -> None:
         return
 
     _append_history(pick_data, quote["price"])
+    now = datetime.now(settings.SHA_TZ)
     send_tg(
-        f"🎯 今日AI精选 (Pro版)\n\n🦄 {pick_data['name']} ({pick_data['code']})\n当前价: {quote['price']}\n\n📝 逻辑：\n{pick_data['reason']}"
+        _format_market_message(
+            "市场观察记录",
+            report_time=now.strftime("%Y-%m-%d %H:%M"),
+            source="热门股 / 近期新闻 / DeepSeek",
+            category="观察记录",
+            importance="中",
+            summary=f"{pick_data['name']} ({pick_data['code']}) 被记录为观察标的，当前价 {quote['price']}。",
+            impact=f"观察理由：{pick_data['reason']}",
+            links="未知",
+        )
     )
 
 
@@ -176,8 +282,18 @@ def run_track() -> None:
             return
 
         icon = "🔴" if pct_num is not None and pct_num > 0 else "🟢"
+        now = datetime.now(settings.SHA_TZ)
         send_tg(
-            f"👀 选股跟踪: {pick_data['name']}\n\n{icon} 现价: {quote['price']} ({pct_for_prompt}%)\n\n🧠 AI观点：\n{analysis}"
+            _format_market_message(
+                "观察标的跟踪",
+                report_time=now.strftime("%Y-%m-%d %H:%M"),
+                source="stock_pick.json / 东方财富行情 / DeepSeek",
+                category="观察记录",
+                importance="中",
+                summary=f"{icon} {pick_data['name']} ({pick_data['code']}) 当前价 {quote['price']}，涨跌幅 {pct_for_prompt}%。",
+                impact=f"观察观点：{analysis}",
+                links="未知",
+            )
         )
     except Exception as exc:
         log_error(f"❌ 追踪失败: {exc}")
@@ -216,7 +332,18 @@ def run_analysis(mode: str) -> None:
             model="deepseek-reasoner",
         )
         if content:
-            send_tg(f"💰 主力资金雷达 ({now.strftime('%Y-%m-%d')})\n\n{content}")
+            send_tg(
+                _format_market_message(
+                    "主力资金雷达",
+                    report_time=now.strftime("%Y-%m-%d %H:%M"),
+                    source=_format_sources(news, "东方财富资金流 / 新闻源"),
+                    category="资金",
+                    importance="中",
+                    summary=content,
+                    impact="结合行业资金流、板块涨跌和近期消息，仅作市场观察参考。",
+                    links=_format_links([item.get("link") for item in news[:5]]),
+                )
+            )
         return
 
     if mode == "daily":
@@ -239,7 +366,18 @@ def run_analysis(mode: str) -> None:
             model="deepseek-reasoner",
         )
         if content:
-            send_tg(f"🌅 股市全景内参 ({now.strftime('%Y-%m-%d')})\n\n{content}")
+            send_tg(
+                _format_market_message(
+                    "今日市场信息摘要",
+                    report_time=now.strftime("%Y-%m-%d %H:%M"),
+                    source=_format_sources(news, "东方财富 / RSS"),
+                    category="综合",
+                    importance="中",
+                    summary=content,
+                    impact="用于快速了解市场主线、情绪和风险偏好，不构成买卖依据。",
+                    links=_format_links([item.get("link") for item in news[:5]]),
+                )
+            )
         return
 
     if mode == "monitor":
@@ -281,7 +419,6 @@ def run_analysis(mode: str) -> None:
             return
 
         alerts_buffer: list[str] = []
-        alert_links: list[str] = []
         for line in content.split("\n"):
             if "ALERT|" not in line:
                 continue
@@ -294,17 +431,22 @@ def run_analysis(mode: str) -> None:
                 continue
             if idx < len(dedup_news):
                 item = dedup_news[idx]
+                link = str(item.get("link") or "").strip()
                 alerts_buffer.append(
-                    f"💡 逻辑：{parts[2]}\n📰 {item['title']} ({item['time_str']})"
+                    _format_market_message(
+                        "市场信息摘要",
+                        report_time=_format_news_time(item),
+                        source=str(item.get("source") or "未知"),
+                        category=_infer_news_category(item),
+                        importance="高",
+                        summary=str(item.get("title") or "未知"),
+                        impact=parts[2],
+                        links=link or "未知",
+                    )
                 )
-                alert_links.append(str(item["link"]))
 
         if alerts_buffer:
-            msg = "🎯 机会雷达汇总\n\n" + "\n\n〰️〰️〰️〰️〰️\n\n".join(
-                alerts_buffer[:3]
-            )
-            if alert_links[:3]:
-                msg += "\n\n链接：\n" + "\n".join(alert_links[:3])
+            msg = "\n\n---\n\n".join(alerts_buffer[:3])
             send_tg(
                 msg,
                 token=settings.TG_BOT_TOKEN_MONITOR,
@@ -328,8 +470,18 @@ def run_analysis(mode: str) -> None:
             )
         )
         if content and "无重大事件" not in content:
+            now = datetime.now(settings.SHA_TZ)
             send_tg(
-                f"🌐 国际宏观与板块雷达 (3H)\n\n{content}",
+                _format_market_message(
+                    "国际宏观与板块雷达",
+                    report_time=now.strftime("%Y-%m-%d %H:%M"),
+                    source=_format_sources(news, "Reuters / RSS"),
+                    category="海外",
+                    importance="中",
+                    summary=content,
+                    impact="用于观察海外事件对全球市场、A股映射板块和风险偏好的可能影响。",
+                    links=_format_links([item.get("link") for item in news[:5]]),
+                ),
                 token=settings.TG_BOT_TOKEN_MONITOR,
                 chat_id=settings.TG_CHAT_ID_MONITOR,
             )
@@ -366,12 +518,25 @@ def run_analysis(mode: str) -> None:
             )
         )
         if content:
-            message_title = (
-                f"{title} ({now.strftime('%Y-%m-%d')})"
+            category = "复盘" if mode == "after_market" else "盘中"
+            importance = "中" if mode == "after_market" else "低"
+            impact = (
+                "用于回看当日市场结构、资金偏好和次日风险点。"
                 if mode == "after_market"
-                else title
+                else "用于盘中快速过滤新闻噪音和观察市场情绪。"
             )
-            send_tg(f"{message_title}\n\n{content}")
+            send_tg(
+                _format_market_message(
+                    title,
+                    report_time=now.strftime("%Y-%m-%d %H:%M"),
+                    source=_format_sources(news, "东方财富 / RSS"),
+                    category=category,
+                    importance=importance,
+                    summary=content,
+                    impact=impact,
+                    links=_format_links([item.get("link") for item in news[:5]]),
+                )
+            )
 
 
 def run_review() -> None:
@@ -410,9 +575,23 @@ def run_review() -> None:
             return
         win_rate = (win_count / total_count) * 100
         avg_profit = total_profit / total_count
+        now = datetime.now(settings.SHA_TZ)
+        summary = (
+            f"观察样本正收益占比: {win_rate:.0f}%\n"
+            f"观察样本平均变化: {avg_profit:+.2f}%\n"
+            "------------------\n" + "\n".join(details)
+        )
         send_tg(
-            f"📊 AI 战绩周报\n\n🏆 胜率: {win_rate:.0f}%\n💰 平均收益: {avg_profit:+.2f}%\n------------------\n"
-            + "\n".join(details)
+            _format_market_message(
+                "观察记录复盘辅助",
+                report_time=now.strftime("%Y-%m-%d %H:%M"),
+                source="history.csv / 东方财富行情",
+                category="复盘辅助",
+                importance="低",
+                summary=summary,
+                impact="仅用于回看观察记录表现，不能证明策略有效，也不构成后续操作建议。",
+                links="未知",
+            )
         )
     except Exception as exc:
         log_error(f"复盘失败: {exc}")
