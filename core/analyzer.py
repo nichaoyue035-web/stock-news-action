@@ -9,10 +9,13 @@ from typing import Any, Optional
 
 from config import settings
 from core.data_fetcher import (
+    get_data_source_health,
     get_hot_stocks_data,
     get_market_funds,
     get_news,
     get_stock_quote,
+    record_data_source_health,
+    reset_data_source_health,
 )
 from utils.ai_client import get_ai_response
 from utils.notifier import log_error, log_info, send_tg
@@ -195,6 +198,78 @@ def _format_links(links: list[Any], max_links: int = 5) -> str:
     return "\n".join(unique_links[:max_links]) if unique_links else "未知"
 
 
+def _format_source_health_line(name: str, state: dict[str, Any]) -> str:
+    """Format one data source health record for fallback Telegram messages."""
+    status = str(state.get("status") or "unknown")
+    detail = str(state.get("detail") or "").strip()
+    count = state.get("count")
+
+    if status == "success":
+        if count == 0:
+            return f"- {name}：成功，但返回 0 条"
+        if count is not None:
+            return f"- {name}：成功，返回 {count} 条"
+        return f"- {name}：成功"
+    if status == "partial":
+        count_text = f"，返回 {count} 条" if count is not None else ""
+        return f"- {name}：部分失败{count_text}，{detail or '请检查数据源'}"
+    if status == "skipped":
+        return f"- {name}：{detail or '未调用'}"
+    if status == "empty":
+        return f"- {name}：返回空内容"
+    if status == "failed":
+        return f"- {name}：失败，{detail or '请检查数据源'}"
+    return f"- {name}：{detail or status}"
+
+
+def _format_health_status_message(reason: str) -> str:
+    """Build a concise health-only message for no-content or failed runs."""
+    health = get_data_source_health()
+    if "DeepSeek" not in health:
+        health["DeepSeek"] = {"status": "skipped", "detail": "未调用", "count": None}
+
+    lines = [
+        "⚠️ 本次没有生成有效市场信息",
+        "",
+        "可能原因：",
+    ]
+    lines.extend(
+        _format_source_health_line(name, state) for name, state in health.items()
+    )
+    if reason:
+        lines.append(f"- 结果：{reason}")
+    lines.extend(
+        [
+            "",
+            "建议：",
+            "请稍后重试，或检查数据源 / RSS / API 配置。",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _send_health_status(
+    reason: str, token: str | None = None, chat_id: str | None = None
+) -> None:
+    """Send data source health only when normal market content is unavailable."""
+    send_tg(_format_health_status_message(reason), token=token, chat_id=chat_id)
+
+
+def _get_ai_response_with_health(*args, **kwargs) -> Optional[str]:
+    """Call DeepSeek through the existing client and record concise health state."""
+    content = get_ai_response(*args, **kwargs)
+    if str(content or "").strip():
+        record_data_source_health("DeepSeek", "success", "", 1)
+        return content
+    record_data_source_health("DeepSeek", "empty", "返回空内容", 0)
+    return None
+
+
+def _has_effective_content(content: Any) -> bool:
+    """Return whether a generated Telegram body has visible text."""
+    return bool(str(content or "").strip())
+
+
 def _infer_news_category(item: dict[str, Any]) -> str:
     """Infer a lightweight display category from existing news text."""
     if item.get("category"):
@@ -320,9 +395,11 @@ def _format_market_message(
 
 
 def run_recommend() -> None:
+    reset_data_source_health()
     log_info("启动：AI 选股推荐")
     candidates = get_hot_stocks_data()
     if not candidates:
+        _send_health_status("热门股数据为空，无法生成观察记录")
         return
 
     candidates_str = "\n".join(
@@ -341,16 +418,19 @@ def run_recommend() -> None:
         '要求：\n1. 必须从候选列表中选一只，绝对禁止捏造。\n2. 输出 JSON 格式：{"name": "股票名", "code": "6位代码", "reason": "简短理由"}'
     )
 
-    content = get_ai_response(base_prompt, temperature=0.1)
+    content = _get_ai_response_with_health(base_prompt, temperature=0.1)
     if not content:
+        _send_health_status("DeepSeek 没有生成有效摘要")
         return
 
     pick_data = _extract_pick_data(content)
     if not pick_data:
+        _send_health_status("DeepSeek 返回内容无法解析为观察记录")
         return
 
     quote = get_stock_quote(pick_data["code"])
     if not quote:
+        _send_health_status("个股行情为空，无法生成观察记录")
         return
 
     try:
@@ -362,22 +442,26 @@ def run_recommend() -> None:
 
     _append_history(pick_data, quote["price"])
     now = datetime.now(settings.SHA_TZ)
-    send_tg(
-        _format_market_message(
-            "市场观察记录",
-            report_time=now.strftime("%Y-%m-%d %H:%M"),
-            source="热门股 / 近期新闻 / DeepSeek",
-            category="观察记录",
-            importance="低（观察记录）",
-            summary=f"{pick_data['name']} ({pick_data['code']}) 被记录为观察标的，当前价 {quote['price']}。",
-            impact=f"观察理由：{pick_data['reason']}",
-            links="未知",
-        )
+    message = _format_market_message(
+        "市场观察记录",
+        report_time=now.strftime("%Y-%m-%d %H:%M"),
+        source="热门股 / 近期新闻 / DeepSeek",
+        category="观察记录",
+        importance="低（观察记录）",
+        summary=f"{pick_data['name']} ({pick_data['code']}) 被记录为观察标的，当前价 {quote['price']}。",
+        impact=f"观察理由：{pick_data['reason']}",
+        links="未知",
     )
+    if _has_effective_content(message):
+        send_tg(message)
+    else:
+        _send_health_status("最终 Telegram 正文为空")
 
 
 def run_track() -> None:
+    reset_data_source_health()
     if not os.path.exists(settings.PICK_FILE):
+        _send_health_status("未找到观察标的记录")
         return
 
     try:
@@ -385,11 +469,13 @@ def run_track() -> None:
             pick_data = json.load(file)
     except Exception as exc:
         log_error(f"❌ 读取选股文件失败: {exc}")
+        _send_health_status("观察标的记录读取失败")
         return
 
     try:
         quote = get_stock_quote(pick_data["code"])
         if not quote:
+            _send_health_status("个股行情为空，无法跟踪观察标的")
             return
 
         pct_num, pct_for_prompt = _safe_pct_value(quote.get("pct", "-"))
@@ -400,29 +486,34 @@ def run_track() -> None:
             price=quote["price"],
             pct=pct_for_prompt,
         )
-        analysis = get_ai_response(track_prompt)
+        analysis = _get_ai_response_with_health(track_prompt)
         if not analysis:
+            _send_health_status("DeepSeek 没有生成有效摘要")
             return
 
         icon = "🔴" if pct_num is not None and pct_num > 0 else "🟢"
         now = datetime.now(settings.SHA_TZ)
-        send_tg(
-            _format_market_message(
-                "观察标的跟踪",
-                report_time=now.strftime("%Y-%m-%d %H:%M"),
-                source="stock_pick.json / 东方财富行情 / DeepSeek",
-                category="观察记录",
-                importance="低（观察记录）",
-                summary=f"{icon} {pick_data['name']} ({pick_data['code']}) 当前价 {quote['price']}，涨跌幅 {pct_for_prompt}%。",
-                impact=f"观察观点：{analysis}",
-                links="未知",
-            )
+        message = _format_market_message(
+            "观察标的跟踪",
+            report_time=now.strftime("%Y-%m-%d %H:%M"),
+            source="stock_pick.json / 东方财富行情 / DeepSeek",
+            category="观察记录",
+            importance="低（观察记录）",
+            summary=f"{icon} {pick_data['name']} ({pick_data['code']}) 当前价 {quote['price']}，涨跌幅 {pct_for_prompt}%。",
+            impact=f"观察观点：{analysis}",
+            links="未知",
         )
+        if _has_effective_content(message):
+            send_tg(message)
+        else:
+            _send_health_status("最终 Telegram 正文为空")
     except Exception as exc:
         log_error(f"❌ 追踪失败: {exc}")
+        _send_health_status("观察标的跟踪发生异常")
 
 
 def run_analysis(mode: str) -> None:
+    reset_data_source_health()
     log_info(f"启动：通用分析模式 [{mode}]")
     prompts = load_prompts()
 
@@ -430,6 +521,7 @@ def run_analysis(mode: str) -> None:
         now = datetime.now(settings.SHA_TZ)
         top_in, top_out = get_market_funds()
         if not top_in:
+            _send_health_status("资金流数据为空，无法生成资金流摘要")
             return
         in_str = "\n".join(
             [f"- {s['name']}: {s['flow']}亿 ({s['change']})" for s in top_in]
@@ -441,7 +533,7 @@ def run_analysis(mode: str) -> None:
         news_txt = "\n".join(
             [_format_news_prompt_line(n, include_time=True) for n in news[:20]]
         )
-        content = get_ai_response(
+        content = _get_ai_response_with_health(
             prompts.get("funds", settings.DEFAULT_PROMPTS["funds"]).format(
                 in_str=in_str,
                 out_str=out_str,
@@ -466,17 +558,20 @@ def run_analysis(mode: str) -> None:
                     related_sectors=[s["name"] for s in top_in[:3]],
                 )
             )
+        else:
+            _send_health_status("DeepSeek 没有生成有效摘要")
         return
 
     if mode == "daily":
         now = datetime.now(settings.SHA_TZ)
         news = get_news(1440)
         if not news:
+            _send_health_status("新闻数据为空，无法生成每日摘要")
             return
         news_txt = "\n".join(
             [_format_news_prompt_line(n, include_time=True) for n in news[:30]]
         )
-        content = get_ai_response(
+        content = _get_ai_response_with_health(
             prompts.get("daily", settings.DEFAULT_PROMPTS["daily"]).format(
                 news_txt=news_txt,
                 report_date=now.strftime("%Y-%m-%d"),
@@ -503,10 +598,19 @@ def run_analysis(mode: str) -> None:
                     ][:6],
                 )
             )
+        else:
+            _send_health_status("DeepSeek 没有生成有效摘要")
         return
 
     if mode == "monitor":
         news = get_news(90)
+        if not news:
+            _send_health_status(
+                "新闻数据为空，无法生成监控摘要",
+                token=settings.TG_BOT_TOKEN_MONITOR,
+                chat_id=settings.TG_CHAT_ID_MONITOR,
+            )
+            return
         now = datetime.now(settings.SHA_TZ)
         strict_threshold = now - timedelta(minutes=15)
         soft_threshold = now - timedelta(minutes=30)
@@ -522,6 +626,11 @@ def run_analysis(mode: str) -> None:
                 fresh_news.append(item)
 
         if not fresh_news:
+            _send_health_status(
+                "未发现符合时间窗口的重要市场信息",
+                token=settings.TG_BOT_TOKEN_MONITOR,
+                chat_id=settings.TG_CHAT_ID_MONITOR,
+            )
             return
 
         dedup_news: list[dict[str, Any]] = []
@@ -541,12 +650,17 @@ def run_analysis(mode: str) -> None:
             )
             for i, n in enumerate(dedup_news[:12])
         ]
-        content = get_ai_response(
+        content = _get_ai_response_with_health(
             prompts.get("monitor", settings.DEFAULT_PROMPTS["monitor"]).format(
                 news_list="\n".join(news_titles)
             )
         )
         if not content:
+            _send_health_status(
+                "DeepSeek 没有生成有效摘要",
+                token=settings.TG_BOT_TOKEN_MONITOR,
+                chat_id=settings.TG_CHAT_ID_MONITOR,
+            )
             return
 
         alerts_buffer: list[str] = []
@@ -580,8 +694,21 @@ def run_analysis(mode: str) -> None:
 
         if alerts_buffer:
             msg = "\n\n".join(alerts_buffer[:3])
-            send_tg(
-                msg,
+            if _has_effective_content(msg):
+                send_tg(
+                    msg,
+                    token=settings.TG_BOT_TOKEN_MONITOR,
+                    chat_id=settings.TG_CHAT_ID_MONITOR,
+                )
+            else:
+                _send_health_status(
+                    "最终 Telegram 正文为空",
+                    token=settings.TG_BOT_TOKEN_MONITOR,
+                    chat_id=settings.TG_CHAT_ID_MONITOR,
+                )
+        else:
+            _send_health_status(
+                "DeepSeek 未识别需提醒的市场信息",
                 token=settings.TG_BOT_TOKEN_MONITOR,
                 chat_id=settings.TG_CHAT_ID_MONITOR,
             )
@@ -590,6 +717,11 @@ def run_analysis(mode: str) -> None:
     if mode == "global":
         news = get_news(180)
         if not news:
+            _send_health_status(
+                "海外新闻数据为空，无法生成全球摘要",
+                token=settings.TG_BOT_TOKEN_MONITOR,
+                chat_id=settings.TG_CHAT_ID_MONITOR,
+            )
             return
         news_txt = "\n".join(
             [
@@ -597,7 +729,7 @@ def run_analysis(mode: str) -> None:
                 for n in news[:80]
             ]
         )
-        content = get_ai_response(
+        content = _get_ai_response_with_health(
             prompts.get("global", settings.DEFAULT_PROMPTS["global"]).format(
                 news_txt=news_txt
             )
@@ -624,6 +756,12 @@ def run_analysis(mode: str) -> None:
                 token=settings.TG_BOT_TOKEN_MONITOR,
                 chat_id=settings.TG_CHAT_ID_MONITOR,
             )
+        else:
+            _send_health_status(
+                "DeepSeek 没有生成有效摘要或判断无重大事件",
+                token=settings.TG_BOT_TOKEN_MONITOR,
+                chat_id=settings.TG_CHAT_ID_MONITOR,
+            )
         return
 
     if mode in ["periodic", "after_market"]:
@@ -634,6 +772,7 @@ def run_analysis(mode: str) -> None:
 
         news = get_news(240)
         if not news:
+            _send_health_status("新闻数据为空，无法生成市场简报")
             return
 
         if mode == "after_market":
@@ -646,7 +785,7 @@ def run_analysis(mode: str) -> None:
             )
 
         title = "🌇 每日复盘" if mode == "after_market" else "🍵 盘中茶歇"
-        content = get_ai_response(
+        content = _get_ai_response_with_health(
             prompts.get(mode, settings.DEFAULT_PROMPTS[mode]).format(
                 news_txt=news_txt,
                 report_date=now.strftime("%Y-%m-%d"),
@@ -675,10 +814,14 @@ def run_analysis(mode: str) -> None:
                     links=_format_links([item.get("link") for item in news[:5]]),
                 )
             )
+        else:
+            _send_health_status("DeepSeek 没有生成有效摘要")
 
 
 def run_review() -> None:
+    reset_data_source_health()
     if not os.path.exists(settings.HISTORY_FILE):
+        _send_health_status("未找到历史观察记录")
         return
 
     try:
@@ -710,6 +853,7 @@ def run_review() -> None:
             details.append(f"{icon} {row['Name']}: {pct:+.2f}%")
 
         if total_count == 0:
+            _send_health_status("历史观察记录没有可用行情数据")
             return
         win_rate = (win_count / total_count) * 100
         avg_profit = total_profit / total_count
@@ -732,3 +876,4 @@ def run_review() -> None:
         )
     except Exception as exc:
         log_error(f"复盘失败: {exc}")
+        _send_health_status("观察记录复盘发生异常")

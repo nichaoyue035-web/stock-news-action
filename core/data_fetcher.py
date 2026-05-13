@@ -202,6 +202,43 @@ MEDIUM_IMPORTANCE_KEYWORDS: tuple[str, ...] = (
     "涨停",
     "跌停",
 )
+DATA_SOURCE_HEALTH: dict[str, dict[str, Any]] = {}
+
+
+def _redact_sensitive_text(text: Any) -> str:
+    """Return a short error detail without leaking configured secrets."""
+    safe_text = str(text or "").replace("\n", " ").strip()
+    for secret in (
+        settings.DEEPSEEK_API_KEY,
+        settings.TG_BOT_TOKEN,
+        settings.TG_CHAT_ID,
+        settings.TG_BOT_TOKEN_MONITOR,
+        settings.TG_CHAT_ID_MONITOR,
+    ):
+        if secret:
+            safe_text = safe_text.replace(str(secret), "<redacted>")
+    return safe_text[:120] or "未知原因"
+
+
+def reset_data_source_health() -> None:
+    """Clear per-run data source health records."""
+    DATA_SOURCE_HEALTH.clear()
+
+
+def record_data_source_health(
+    name: str, status: str, detail: Any = "", count: Optional[int] = None
+) -> None:
+    """Record one concise data source status for fallback health messages."""
+    DATA_SOURCE_HEALTH[name] = {
+        "status": status,
+        "detail": _redact_sensitive_text(detail),
+        "count": count,
+    }
+
+
+def get_data_source_health() -> dict[str, dict[str, Any]]:
+    """Return a shallow copy of current data source health records."""
+    return {name: dict(state) for name, state in DATA_SOURCE_HEALTH.items()}
 
 
 def get_random_header() -> dict[str, str]:
@@ -265,6 +302,7 @@ def _fetch_external_rss_news(
 ) -> list[dict[str, Any]]:
     """从海外+自定义 RSS 信息源获取新闻。"""
     if not settings.EXTERNAL_NEWS_RSS:
+        record_data_source_health("海外 RSS", "skipped", "未配置", 0)
         return []
 
     now = datetime.datetime.now(settings.SHA_TZ)
@@ -272,13 +310,16 @@ def _fetch_external_rss_news(
     time_threshold = now - delta
 
     items: list[dict[str, Any]] = []
+    failures: list[str] = []
     for feed_url in settings.EXTERNAL_NEWS_RSS:
         try:
             resp = requests.get(feed_url, headers=get_random_header(), timeout=15)
             resp.raise_for_status()
             root = ET.fromstring(resp.content)
         except Exception as exc:
-            log_error(f"⚠️ 自定义信息源抓取失败 [{feed_url}]: {exc}")
+            reason = _redact_sensitive_text(exc)
+            failures.append(reason)
+            log_error(f"⚠️ 自定义信息源抓取失败 [{feed_url}]: {reason}")
             continue
 
         source_host = urlparse(feed_url).netloc or "custom"
@@ -313,6 +354,14 @@ def _fetch_external_rss_news(
                     "source": source_host,
                 }
             )
+    if failures and not items:
+        record_data_source_health("海外 RSS", "failed", failures[0], 0)
+    elif failures:
+        record_data_source_health(
+            "海外 RSS", "partial", f"部分失败：{failures[0]}", len(items)
+        )
+    else:
+        record_data_source_health("海外 RSS", "success", "", len(items))
     return items
 
 
@@ -542,8 +591,12 @@ def get_news(minutes_lookback: Optional[int] = None) -> list[dict[str, Any]]:
             items = payload.get("LivesList", [])
             if not isinstance(items, list):
                 items = []
+                record_data_source_health(
+                    "东方财富快讯", "failed", "LivesList 格式异常", 0
+                )
         else:
             items = []
+            record_data_source_health("东方财富快讯", "failed", "返回格式异常", 0)
 
         now = datetime.datetime.now(settings.SHA_TZ)
         delta = timedelta(minutes=minutes_lookback if minutes_lookback else 1440)
@@ -580,6 +633,9 @@ def get_news(minutes_lookback: Optional[int] = None) -> list[dict[str, Any]]:
                 }
             )
 
+        if "东方财富快讯" not in DATA_SOURCE_HEALTH:
+            record_data_source_health("东方财富快讯", "success", "", len(valid_news))
+
         external_news = _fetch_external_rss_news(minutes_lookback)
         normalized_external_news = _normalize_external_news(external_news)
 
@@ -587,7 +643,9 @@ def get_news(minutes_lookback: Optional[int] = None) -> list[dict[str, Any]]:
         merged_news.sort(key=lambda x: x["datetime"], reverse=True)
         return enrich_news_items(_refine_news(merged_news))
     except Exception as exc:
-        log_error(f"❌ 新闻抓取失败: {exc}")
+        reason = _redact_sensitive_text(exc)
+        record_data_source_health("东方财富快讯", "failed", reason, 0)
+        log_error(f"❌ 新闻抓取失败: {reason}")
         external_news = _fetch_external_rss_news(minutes_lookback)
         normalized_external_news = _normalize_external_news(external_news)
         normalized_external_news.sort(key=lambda x: x["datetime"], reverse=True)
@@ -614,6 +672,7 @@ def get_market_funds() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         )
         data = resp.json().get("data", {}).get("diff", [])
         if not isinstance(data, list):
+            record_data_source_health("资金流数据", "failed", "返回格式异常", 0)
             return [], []
 
         sectors: list[dict[str, Any]] = []
@@ -641,9 +700,12 @@ def get_market_funds() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
             )
 
         sectors.sort(key=lambda x: x["flow"], reverse=True)
+        record_data_source_health("资金流数据", "success", "", len(sectors))
         return sectors[:8], sectors[-8:]
     except Exception as exc:
-        log_error(f"❌ 资金流向获取失败: {exc}")
+        reason = _redact_sensitive_text(exc)
+        record_data_source_health("资金流数据", "failed", reason, 0)
+        log_error(f"❌ 资金流向获取失败: {reason}")
         return [], []
 
 
@@ -666,6 +728,7 @@ def get_hot_stocks_data() -> list[dict[str, Any]]:
         )
         data = resp.json().get("data", {}).get("diff", [])
         if not isinstance(data, list):
+            record_data_source_health("热门股数据", "failed", "返回格式异常", 0)
             return []
 
         stock_list: list[dict[str, Any]] = []
@@ -690,9 +753,12 @@ def get_hot_stocks_data() -> list[dict[str, Any]]:
                     "source": "eastmoney",
                 }
             )
+        record_data_source_health("热门股数据", "success", "", len(stock_list))
         return stock_list
     except Exception as exc:
-        log_error(f"❌ 热门股获取失败: {exc}")
+        reason = _redact_sensitive_text(exc)
+        record_data_source_health("热门股数据", "failed", reason, 0)
+        log_error(f"❌ 热门股获取失败: {reason}")
         return []
 
 
@@ -718,12 +784,16 @@ def get_stock_quote(code: Any) -> Optional[dict[str, str]]:
         resp = requests.get(url, headers=get_random_header(), timeout=5)
         data = resp.json().get("data", {})
         if not data:
+            record_data_source_health("个股行情", "failed", "返回空数据", 0)
             return None
+        record_data_source_health("个股行情", "success", "", 1)
         return {
             "name": data.get("f14", "未知"),
             "price": _normalize_eastmoney_decimal(data.get("f43"), scale=100, digits=2),
             "pct": _normalize_eastmoney_decimal(data.get("f170"), scale=100, digits=2),
         }
     except Exception as exc:
-        log_error(f"❌ 个股行情获取失败 [{code}]: {exc}")
+        reason = _redact_sensitive_text(exc)
+        record_data_source_health("个股行情", "failed", reason, 0)
+        log_error(f"❌ 个股行情获取失败 [{code}]: {reason}")
         return None
