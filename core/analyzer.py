@@ -178,7 +178,6 @@ def _format_market_message(
     summary: str,
     impact: str = "见上方摘要",
     links: str = "未知",
-    include_risk_tip: bool = True,
 ) -> str:
     """Build a stable Telegram information template."""
     message = (
@@ -193,8 +192,6 @@ def _format_market_message(
         f"【可能影响】{_soften_trading_language(impact)}\n"
         f"【原文链接】{links or '未知'}"
     )
-    if include_risk_tip:
-        message += "\n\n【风险提示】数据可能延迟；AI 摘要可能有误；重要信息需人工核查。"
     return message
 
 
