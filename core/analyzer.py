@@ -181,9 +181,7 @@ def _format_market_message(
 ) -> str:
     """Build a stable Telegram information template."""
     message = (
-        "====================\n"
-        f"📌 {title}\n"
-        "====================\n\n"
+        f"📌 {title}\n\n"
         f"【时间】{report_time or '未知'}\n"
         f"【来源】{source or '未知'}\n"
         f"【分类】{category or '其他'}\n"
@@ -443,7 +441,7 @@ def run_analysis(mode: str) -> None:
                 )
 
         if alerts_buffer:
-            msg = "\n\n---\n\n".join(alerts_buffer[:3])
+            msg = "\n\n".join(alerts_buffer[:3])
             send_tg(
                 msg,
                 token=settings.TG_BOT_TOKEN_MONITOR,
@@ -575,8 +573,7 @@ def run_review() -> None:
         now = datetime.now(settings.SHA_TZ)
         summary = (
             f"观察样本正收益占比: {win_rate:.0f}%\n"
-            f"观察样本平均变化: {avg_profit:+.2f}%\n"
-            "------------------\n" + "\n".join(details)
+            f"观察样本平均变化: {avg_profit:+.2f}%\n" + "\n".join(details)
         )
         send_tg(
             _format_market_message(
