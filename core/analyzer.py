@@ -168,6 +168,71 @@ def _infer_news_category(item: dict[str, Any]) -> str:
     return "其他"
 
 
+def _infer_market_importance(item: dict[str, Any]) -> str:
+    """Estimate importance by market/sector impact, not single-company relevance."""
+    text = f"{item.get('title', '')} {item.get('digest', '')}"
+    market_keywords = (
+        "国务院",
+        "央行",
+        "证监会",
+        "财政部",
+        "发改委",
+        "降息",
+        "加息",
+        "降准",
+        "关税",
+        "汇率",
+        "人民币",
+        "美联储",
+        "CPI",
+        "PPI",
+        "通胀",
+        "油价",
+        "指数",
+        "A股",
+        "市场",
+    )
+    sector_keywords = (
+        "政策",
+        "行业",
+        "板块",
+        "产业",
+        "产业链",
+        "多家",
+        "集体",
+        "AI",
+        "算力",
+        "芯片",
+        "半导体",
+        "新能源",
+        "机器人",
+        "医药",
+        "地产",
+        "银行",
+        "券商",
+        "消费",
+        "军工",
+    )
+    single_company_keywords = (
+        "公告",
+        "业绩",
+        "回购",
+        "增持",
+        "减持",
+        "股东",
+        "签订",
+        "中标",
+    )
+
+    if any(keyword in text for keyword in market_keywords):
+        return "高（市场级）"
+    if any(keyword in text for keyword in sector_keywords):
+        return "中（板块级）"
+    if any(keyword in text for keyword in single_company_keywords):
+        return "低（个股级）"
+    return "中（待确认板块影响）"
+
+
 def _format_market_message(
     title: str,
     *,
@@ -240,7 +305,7 @@ def run_recommend() -> None:
             report_time=now.strftime("%Y-%m-%d %H:%M"),
             source="热门股 / 近期新闻 / DeepSeek",
             category="观察记录",
-            importance="中",
+            importance="低（观察记录）",
             summary=f"{pick_data['name']} ({pick_data['code']}) 被记录为观察标的，当前价 {quote['price']}。",
             impact=f"观察理由：{pick_data['reason']}",
             links="未知",
@@ -284,7 +349,7 @@ def run_track() -> None:
                 report_time=now.strftime("%Y-%m-%d %H:%M"),
                 source="stock_pick.json / 东方财富行情 / DeepSeek",
                 category="观察记录",
-                importance="中",
+                importance="低（观察记录）",
                 summary=f"{icon} {pick_data['name']} ({pick_data['code']}) 当前价 {quote['price']}，涨跌幅 {pct_for_prompt}%。",
                 impact=f"观察观点：{analysis}",
                 links="未知",
@@ -333,7 +398,7 @@ def run_analysis(mode: str) -> None:
                     report_time=now.strftime("%Y-%m-%d %H:%M"),
                     source=_format_sources(news, "东方财富资金流 / 新闻源"),
                     category="资金",
-                    importance="中",
+                    importance="中（板块级）",
                     summary=content,
                     impact="结合行业资金流、板块涨跌和近期消息，仅作市场观察参考。",
                     links=_format_links([item.get("link") for item in news[:5]]),
@@ -367,7 +432,7 @@ def run_analysis(mode: str) -> None:
                     report_time=now.strftime("%Y-%m-%d %H:%M"),
                     source=_format_sources(news, "东方财富 / RSS"),
                     category="综合",
-                    importance="中",
+                    importance="中（市场汇总）",
                     summary=content,
                     impact="用于快速了解市场主线、情绪和风险偏好，不构成买卖依据。",
                     links=_format_links([item.get("link") for item in news[:5]]),
@@ -433,7 +498,7 @@ def run_analysis(mode: str) -> None:
                         report_time=_format_news_time(item),
                         source=str(item.get("source") or "未知"),
                         category=_infer_news_category(item),
-                        importance="高",
+                        importance=_infer_market_importance(item),
                         summary=str(item.get("title") or "未知"),
                         impact=parts[2],
                         links=link or "未知",
@@ -472,7 +537,7 @@ def run_analysis(mode: str) -> None:
                     report_time=now.strftime("%Y-%m-%d %H:%M"),
                     source=_format_sources(news, "Reuters / RSS"),
                     category="海外",
-                    importance="中",
+                    importance="中（市场/板块级）",
                     summary=content,
                     impact="用于观察海外事件对全球市场、A股映射板块和风险偏好的可能影响。",
                     links=_format_links([item.get("link") for item in news[:5]]),
@@ -514,7 +579,9 @@ def run_analysis(mode: str) -> None:
         )
         if content:
             category = "复盘" if mode == "after_market" else "盘中"
-            importance = "中" if mode == "after_market" else "低"
+            importance = (
+                "中（市场复盘）" if mode == "after_market" else "低（盘中简报）"
+            )
             impact = (
                 "用于回看当日市场结构、资金偏好和次日风险点。"
                 if mode == "after_market"
@@ -581,7 +648,7 @@ def run_review() -> None:
                 report_time=now.strftime("%Y-%m-%d %H:%M"),
                 source="history.csv / 东方财富行情",
                 category="复盘辅助",
-                importance="低",
+                importance="低（复盘辅助）",
                 summary=summary,
                 impact="仅用于回看观察记录表现，不能证明策略有效，也不构成后续操作建议。",
                 links="未知",
