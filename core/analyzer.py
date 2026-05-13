@@ -191,13 +191,23 @@ def run_analysis(mode: str) -> None:
         return
 
     if mode == "daily":
+        now = datetime.now(settings.SHA_TZ)
         news = get_news(1440)
         if not news:
             return
-        news_txt = "\n".join([f"- [{n.get('source', 'unknown')}] {n['title']}" for n in news[:30]])
-        content = get_ai_response(prompts.get("daily", settings.DEFAULT_PROMPTS["daily"]).format(news_txt=news_txt))
+        news_txt = "\n".join(
+            [f"- [{n.get('source', 'unknown')}] {n.get('time_str', '')} {n['title']}" for n in news[:30]]
+        )
+        content = get_ai_response(
+            prompts.get("daily", settings.DEFAULT_PROMPTS["daily"]).format(
+                news_txt=news_txt,
+                report_date=now.strftime("%Y-%m-%d"),
+                report_time=now.strftime("%Y-%m-%d %H:%M"),
+            ),
+            model="deepseek-reasoner",
+        )
         if content:
-            send_tg(f"🌅 股市全景内参\n\n{content}")
+            send_tg(f"🌅 股市全景内参 ({now.strftime('%Y-%m-%d')})\n\n{content}")
         return
 
     if mode == "monitor":

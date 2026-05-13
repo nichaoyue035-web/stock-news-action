@@ -2,12 +2,13 @@ from openai import OpenAI
 from config import settings
 from utils.notifier import log_error, log_info
 
-def get_ai_response(prompt_text, system_role=None, temperature=1.0):
+def get_ai_response(prompt_text, system_role=None, temperature=1.0, model="deepseek-chat"):
     """
     统一的 AI 调用接口
     :param prompt_text: 用户输入的提示词
     :param system_role: 系统角色设定 (可选)
     :param temperature: 随机度 (0-2)，默认1.0
+    :param model: DeepSeek 模型名称，默认 deepseek-chat；需要思考模式时传 deepseek-reasoner
     :return: AI 的回复文本 (str) 或 None
     """
     # 1. 安全检查
@@ -31,7 +32,7 @@ def get_ai_response(prompt_text, system_role=None, temperature=1.0):
     # 4. 发起请求并处理异常
     try:
         resp = client.chat.completions.create(
-            model="deepseek-chat",
+            model=model,
             messages=messages,
             temperature=temperature
         )
