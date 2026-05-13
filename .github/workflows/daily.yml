@@ -32,6 +32,8 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GLOBAL_NEWS_RSS: ${{ secrets.GLOBAL_NEWS_RSS }}
+          CUSTOM_NEWS_RSS: ${{ secrets.CUSTOM_NEWS_RSS }}
         run: python main.py daily
 
       # 2. 运行 AI 选股 (Recommend Mode)
@@ -41,6 +43,8 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GLOBAL_NEWS_RSS: ${{ secrets.GLOBAL_NEWS_RSS }}
+          CUSTOM_NEWS_RSS: ${{ secrets.CUSTOM_NEWS_RSS }}
         run: python main.py recommend
 
       # 3. 💾 将选股记忆文件 和 历史战绩表 提交回仓库
