@@ -9,10 +9,13 @@ from typing import Any, Optional
 
 from config import settings
 from core.data_fetcher import (
+    get_data_source_health,
     get_hot_stocks_data,
     get_market_funds,
     get_news,
     get_stock_quote,
+    record_data_source_health,
+    reset_data_source_health,
 )
 from utils.ai_client import get_ai_response
 from utils.notifier import log_error, log_info, send_tg
@@ -34,6 +37,23 @@ HIGH_IMPACT_KEYWORDS: tuple[str, ...] = (
     "算力",
     "芯片",
 )
+
+CATEGORY_LABELS: dict[str, str] = {
+    "macro": "宏观",
+    "policy": "政策",
+    "industry": "行业",
+    "company": "公司",
+    "capital_flow": "资金",
+    "overseas": "海外",
+    "market_sentiment": "情绪",
+    "other": "其他",
+}
+
+IMPORTANCE_LABELS: dict[str, str] = {
+    "high": "高",
+    "medium": "中",
+    "low": "低",
+}
 
 
 def load_prompts() -> dict[str, str]:
@@ -124,6 +144,40 @@ def _format_news_time(item: dict[str, Any]) -> str:
     return str(item.get("time_str") or "未知")
 
 
+def _display_category(value: Any) -> str:
+    """Display category codes as Chinese labels, preserving custom labels."""
+    text = str(value or "other").strip()
+    return CATEGORY_LABELS.get(text, text or "其他")
+
+
+def _display_importance(value: Any) -> str:
+    """Display importance codes as Chinese labels, preserving detailed text."""
+    text = str(value or "medium").strip()
+    return IMPORTANCE_LABELS.get(text, text or "中")
+
+
+def _format_related_sectors(value: Any) -> str:
+    """Format optional sector tags without failing on legacy data."""
+    if isinstance(value, list):
+        sectors = [str(item).strip() for item in value if str(item).strip()]
+        return "、".join(sectors[:6]) if sectors else "其他"
+    text = str(value or "").strip()
+    return text or "其他"
+
+
+def _format_news_prompt_line(item: dict[str, Any], include_time: bool = True) -> str:
+    """Render one news item with structured tags for prompts and summaries."""
+    source = str(item.get("source") or "unknown")
+    time_part = f" {item.get('time_str', '')}" if include_time else ""
+    tags = (
+        f"分类:{_display_category(item.get('category'))} / "
+        f"重要性:{_display_importance(item.get('importance'))} / "
+        f"范围:{item.get('market_scope') or '其他'}"
+    )
+    sectors = _format_related_sectors(item.get("related_sectors"))
+    return f"- [{source}]{time_part} [{tags} / 板块:{sectors}] {item.get('title', '')}"
+
+
 def _format_sources(news: list[dict[str, Any]], fallback: str = "未知") -> str:
     """Format known news sources for Telegram metadata."""
     sources: list[str] = []
@@ -144,8 +198,73 @@ def _format_links(links: list[Any], max_links: int = 5) -> str:
     return "\n".join(unique_links[:max_links]) if unique_links else "未知"
 
 
+def _format_source_health_line(name: str, state: dict[str, Any]) -> str:
+    """Format one data source health record for console diagnostics."""
+    status = str(state.get("status") or "unknown")
+    detail = str(state.get("detail") or "").strip()
+    count = state.get("count")
+
+    if status == "success":
+        if count == 0:
+            return f"- {name}：成功，但返回 0 条"
+        if count is not None:
+            return f"- {name}：成功，返回 {count} 条"
+        return f"- {name}：成功"
+    if status == "partial":
+        count_text = f"，返回 {count} 条" if count is not None else ""
+        return f"- {name}：部分失败{count_text}，{detail or '请检查数据源'}"
+    if status == "skipped":
+        return f"- {name}：{detail or '未调用'}"
+    if status == "empty":
+        return f"- {name}：返回空内容"
+    if status == "failed":
+        return f"- {name}：失败，{detail or '请检查数据源'}"
+    return f"- {name}：{detail or status}"
+
+
+def _format_health_status_message(reason: str) -> str:
+    """Build concise console-only diagnostics for no-content or failed runs."""
+    health = get_data_source_health()
+    if "DeepSeek" not in health:
+        health["DeepSeek"] = {"status": "skipped", "detail": "未调用", "count": None}
+
+    lines = ["数据源状态："]
+    lines.extend(
+        _format_source_health_line(name, state) for name, state in health.items()
+    )
+    if reason:
+        lines.append(f"- 结果：{reason}")
+    return "\n".join(lines)
+
+
+def _send_health_status(
+    reason: str, token: str | None = None, chat_id: str | None = None
+) -> None:
+    """Log health diagnostics without sending no-content Telegram messages."""
+    _ = (token, chat_id)
+    log_info(_format_health_status_message(reason))
+
+
+def _get_ai_response_with_health(*args, **kwargs) -> Optional[str]:
+    """Call DeepSeek through the existing client and record concise health state."""
+    content = get_ai_response(*args, **kwargs)
+    if str(content or "").strip():
+        record_data_source_health("DeepSeek", "success", "", 1)
+        return content
+    record_data_source_health("DeepSeek", "empty", "返回空内容", 0)
+    return None
+
+
+def _has_effective_content(content: Any) -> bool:
+    """Return whether a generated Telegram body has visible text."""
+    return bool(str(content or "").strip())
+
+
 def _infer_news_category(item: dict[str, Any]) -> str:
     """Infer a lightweight display category from existing news text."""
+    if item.get("category"):
+        return _display_category(item.get("category"))
+
     text = f"{item.get('title', '')} {item.get('digest', '')}"
     if any(keyword in text for keyword in ("政策", "监管", "国务院", "央行", "证监会")):
         return "政策"
@@ -170,6 +289,9 @@ def _infer_news_category(item: dict[str, Any]) -> str:
 
 def _infer_market_importance(item: dict[str, Any]) -> str:
     """Estimate importance by market/sector impact, not single-company relevance."""
+    if item.get("importance"):
+        return _display_importance(item.get("importance"))
+
     text = f"{item.get('title', '')} {item.get('digest', '')}"
     market_keywords = (
         "国务院",
@@ -233,6 +355,25 @@ def _infer_market_importance(item: dict[str, Any]) -> str:
     return "中（待确认板块影响）"
 
 
+def _title_icon(title: str) -> str:
+    """Pick a Telegram title icon by message type instead of using one icon everywhere."""
+    icon_map = (
+        ("资金", "💰"),
+        ("国际", "🌍"),
+        ("宏观", "🌍"),
+        ("每日复盘", "🌇"),
+        ("盘中茶歇", "🍵"),
+        ("市场信息", "📰"),
+        ("市场观察", "🔎"),
+        ("观察标的", "👀"),
+        ("复盘辅助", "🧾"),
+    )
+    for keyword, icon in icon_map:
+        if keyword in title:
+            return icon
+    return "📌"
+
+
 def _format_market_message(
     title: str,
     *,
@@ -243,14 +384,20 @@ def _format_market_message(
     summary: str,
     impact: str = "见上方摘要",
     links: str = "未知",
+    market_scope: str = "其他",
+    related_sectors: Any = None,
+    include_title: bool = True,
 ) -> str:
     """Build a stable Telegram information template."""
+    title_prefix = f"{_title_icon(title)} {title}\n\n" if include_title else ""
     message = (
-        f"📌 {title}\n\n"
+        f"{title_prefix}"
         f"【时间】{report_time or '未知'}\n"
         f"【来源】{source or '未知'}\n"
-        f"【分类】{category or '其他'}\n"
-        f"【重要性】{importance or '中'}\n"
+        f"【分类】{_display_category(category)}\n"
+        f"【重要性】{_display_importance(importance)}\n"
+        f"【影响范围】{market_scope or '其他'}\n"
+        f"【相关板块】{_format_related_sectors(related_sectors)}\n"
         f"【摘要】{_soften_trading_language(summary)}\n"
         f"【可能影响】{_soften_trading_language(impact)}\n"
         f"【原文链接】{links or '未知'}"
@@ -259,9 +406,11 @@ def _format_market_message(
 
 
 def run_recommend() -> None:
+    reset_data_source_health()
     log_info("启动：AI 选股推荐")
     candidates = get_hot_stocks_data()
     if not candidates:
+        _send_health_status("热门股数据为空，无法生成观察记录")
         return
 
     candidates_str = "\n".join(
@@ -271,23 +420,28 @@ def run_recommend() -> None:
         ]
     )
     news = get_news(720)
-    news_txt = "\n".join([f"- {n['title']}" for n in news[:15]])
+    news_txt = "\n".join(
+        [_format_news_prompt_line(n, include_time=False) for n in news[:15]]
+    )
     base_prompt = (
         "你是极其理性的量化交易员。请从下方的【候选股票列表】中，挑选唯一一只最符合当前市场热点和新闻面的股票。\n\n"
         f"【候选股票列表】:\n{candidates_str}\n\n【近期新闻】:\n{news_txt}\n\n"
         '要求：\n1. 必须从候选列表中选一只，绝对禁止捏造。\n2. 输出 JSON 格式：{"name": "股票名", "code": "6位代码", "reason": "简短理由"}'
     )
 
-    content = get_ai_response(base_prompt, temperature=0.1)
+    content = _get_ai_response_with_health(base_prompt, temperature=0.1)
     if not content:
+        _send_health_status("DeepSeek 没有生成有效摘要")
         return
 
     pick_data = _extract_pick_data(content)
     if not pick_data:
+        _send_health_status("DeepSeek 返回内容无法解析为观察记录")
         return
 
     quote = get_stock_quote(pick_data["code"])
     if not quote:
+        _send_health_status("个股行情为空，无法生成观察记录")
         return
 
     try:
@@ -299,22 +453,26 @@ def run_recommend() -> None:
 
     _append_history(pick_data, quote["price"])
     now = datetime.now(settings.SHA_TZ)
-    send_tg(
-        _format_market_message(
-            "市场观察记录",
-            report_time=now.strftime("%Y-%m-%d %H:%M"),
-            source="热门股 / 近期新闻 / DeepSeek",
-            category="观察记录",
-            importance="低（观察记录）",
-            summary=f"{pick_data['name']} ({pick_data['code']}) 被记录为观察标的，当前价 {quote['price']}。",
-            impact=f"观察理由：{pick_data['reason']}",
-            links="未知",
-        )
+    message = _format_market_message(
+        "市场观察记录",
+        report_time=now.strftime("%Y-%m-%d %H:%M"),
+        source="热门股 / 近期新闻 / DeepSeek",
+        category="观察记录",
+        importance="低（观察记录）",
+        summary=f"{pick_data['name']} ({pick_data['code']}) 被记录为观察标的，当前价 {quote['price']}。",
+        impact=f"观察理由：{pick_data['reason']}",
+        links="未知",
     )
+    if _has_effective_content(message):
+        send_tg(message)
+    else:
+        _send_health_status("最终 Telegram 正文为空")
 
 
 def run_track() -> None:
+    reset_data_source_health()
     if not os.path.exists(settings.PICK_FILE):
+        _send_health_status("未找到观察标的记录")
         return
 
     try:
@@ -322,11 +480,13 @@ def run_track() -> None:
             pick_data = json.load(file)
     except Exception as exc:
         log_error(f"❌ 读取选股文件失败: {exc}")
+        _send_health_status("观察标的记录读取失败")
         return
 
     try:
         quote = get_stock_quote(pick_data["code"])
         if not quote:
+            _send_health_status("个股行情为空，无法跟踪观察标的")
             return
 
         pct_num, pct_for_prompt = _safe_pct_value(quote.get("pct", "-"))
@@ -337,29 +497,34 @@ def run_track() -> None:
             price=quote["price"],
             pct=pct_for_prompt,
         )
-        analysis = get_ai_response(track_prompt)
+        analysis = _get_ai_response_with_health(track_prompt)
         if not analysis:
+            _send_health_status("DeepSeek 没有生成有效摘要")
             return
 
         icon = "🔴" if pct_num is not None and pct_num > 0 else "🟢"
         now = datetime.now(settings.SHA_TZ)
-        send_tg(
-            _format_market_message(
-                "观察标的跟踪",
-                report_time=now.strftime("%Y-%m-%d %H:%M"),
-                source="stock_pick.json / 东方财富行情 / DeepSeek",
-                category="观察记录",
-                importance="低（观察记录）",
-                summary=f"{icon} {pick_data['name']} ({pick_data['code']}) 当前价 {quote['price']}，涨跌幅 {pct_for_prompt}%。",
-                impact=f"观察观点：{analysis}",
-                links="未知",
-            )
+        message = _format_market_message(
+            "观察标的跟踪",
+            report_time=now.strftime("%Y-%m-%d %H:%M"),
+            source="stock_pick.json / 东方财富行情 / DeepSeek",
+            category="观察记录",
+            importance="低（观察记录）",
+            summary=f"{icon} {pick_data['name']} ({pick_data['code']}) 当前价 {quote['price']}，涨跌幅 {pct_for_prompt}%。",
+            impact=f"观察观点：{analysis}",
+            links="未知",
         )
+        if _has_effective_content(message):
+            send_tg(message)
+        else:
+            _send_health_status("最终 Telegram 正文为空")
     except Exception as exc:
         log_error(f"❌ 追踪失败: {exc}")
+        _send_health_status("观察标的跟踪发生异常")
 
 
 def run_analysis(mode: str) -> None:
+    reset_data_source_health()
     log_info(f"启动：通用分析模式 [{mode}]")
     prompts = load_prompts()
 
@@ -367,6 +532,7 @@ def run_analysis(mode: str) -> None:
         now = datetime.now(settings.SHA_TZ)
         top_in, top_out = get_market_funds()
         if not top_in:
+            _send_health_status("资金流数据为空，无法生成资金流摘要")
             return
         in_str = "\n".join(
             [f"- {s['name']}: {s['flow']}亿 ({s['change']})" for s in top_in]
@@ -376,12 +542,9 @@ def run_analysis(mode: str) -> None:
         )
         news = get_news(720)
         news_txt = "\n".join(
-            [
-                f"- [{n.get('source', 'unknown')}] {n.get('time_str', '')} {n['title']}"
-                for n in news[:20]
-            ]
+            [_format_news_prompt_line(n, include_time=True) for n in news[:20]]
         )
-        content = get_ai_response(
+        content = _get_ai_response_with_health(
             prompts.get("funds", settings.DEFAULT_PROMPTS["funds"]).format(
                 in_str=in_str,
                 out_str=out_str,
@@ -397,27 +560,29 @@ def run_analysis(mode: str) -> None:
                     "主力资金雷达",
                     report_time=now.strftime("%Y-%m-%d %H:%M"),
                     source=_format_sources(news, "东方财富资金流 / 新闻源"),
-                    category="资金",
-                    importance="中（板块级）",
+                    category="capital_flow",
+                    importance="medium",
                     summary=content,
                     impact="结合行业资金流、板块涨跌和近期消息，仅作市场观察参考。",
                     links=_format_links([item.get("link") for item in news[:5]]),
+                    market_scope="行业",
+                    related_sectors=[s["name"] for s in top_in[:3]],
                 )
             )
+        else:
+            _send_health_status("DeepSeek 没有生成有效摘要")
         return
 
     if mode == "daily":
         now = datetime.now(settings.SHA_TZ)
         news = get_news(1440)
         if not news:
+            _send_health_status("新闻数据为空，无法生成每日摘要")
             return
         news_txt = "\n".join(
-            [
-                f"- [{n.get('source', 'unknown')}] {n.get('time_str', '')} {n['title']}"
-                for n in news[:30]
-            ]
+            [_format_news_prompt_line(n, include_time=True) for n in news[:30]]
         )
-        content = get_ai_response(
+        content = _get_ai_response_with_health(
             prompts.get("daily", settings.DEFAULT_PROMPTS["daily"]).format(
                 news_txt=news_txt,
                 report_date=now.strftime("%Y-%m-%d"),
@@ -431,17 +596,32 @@ def run_analysis(mode: str) -> None:
                     "今日市场信息摘要",
                     report_time=now.strftime("%Y-%m-%d %H:%M"),
                     source=_format_sources(news, "东方财富 / RSS"),
-                    category="综合",
-                    importance="中（市场汇总）",
+                    category="other",
+                    importance="medium",
                     summary=content,
                     impact="用于快速了解市场主线、情绪和风险偏好，不构成买卖依据。",
                     links=_format_links([item.get("link") for item in news[:5]]),
+                    market_scope="A股",
+                    related_sectors=[
+                        sector
+                        for item in news[:20]
+                        for sector in item.get("related_sectors", [])
+                    ][:6],
                 )
             )
+        else:
+            _send_health_status("DeepSeek 没有生成有效摘要")
         return
 
     if mode == "monitor":
         news = get_news(90)
+        if not news:
+            _send_health_status(
+                "新闻数据为空，无法生成监控摘要",
+                token=settings.TG_BOT_TOKEN_MONITOR,
+                chat_id=settings.TG_CHAT_ID_MONITOR,
+            )
+            return
         now = datetime.now(settings.SHA_TZ)
         strict_threshold = now - timedelta(minutes=15)
         soft_threshold = now - timedelta(minutes=30)
@@ -457,6 +637,11 @@ def run_analysis(mode: str) -> None:
                 fresh_news.append(item)
 
         if not fresh_news:
+            _send_health_status(
+                "未发现符合时间窗口的重要市场信息",
+                token=settings.TG_BOT_TOKEN_MONITOR,
+                chat_id=settings.TG_CHAT_ID_MONITOR,
+            )
             return
 
         dedup_news: list[dict[str, Any]] = []
@@ -467,15 +652,26 @@ def run_analysis(mode: str) -> None:
                 dedup_news.append(item)
 
         news_titles = [
-            f"{i}. [{n.get('source', 'unknown')}] {n['title']} (详情:{n['digest'][:60]})"
+            (
+                f"{i}. [{n.get('source', 'unknown')}] "
+                f"[分类:{_display_category(n.get('category'))} / "
+                f"重要性:{_display_importance(n.get('importance'))} / "
+                f"范围:{n.get('market_scope') or '其他'}] "
+                f"{n['title']} (详情:{n['digest'][:60]})"
+            )
             for i, n in enumerate(dedup_news[:12])
         ]
-        content = get_ai_response(
+        content = _get_ai_response_with_health(
             prompts.get("monitor", settings.DEFAULT_PROMPTS["monitor"]).format(
                 news_list="\n".join(news_titles)
             )
         )
         if not content:
+            _send_health_status(
+                "DeepSeek 没有生成有效摘要",
+                token=settings.TG_BOT_TOKEN_MONITOR,
+                chat_id=settings.TG_CHAT_ID_MONITOR,
+            )
             return
 
         alerts_buffer: list[str] = []
@@ -502,13 +698,32 @@ def run_analysis(mode: str) -> None:
                         summary=str(item.get("title") or "未知"),
                         impact=parts[2],
                         links=link or "未知",
+                        market_scope=str(item.get("market_scope") or "其他"),
+                        related_sectors=item.get("related_sectors"),
+                        include_title=False,
                     )
                 )
 
         if alerts_buffer:
-            msg = "\n\n".join(alerts_buffer[:3])
-            send_tg(
-                msg,
+            msg = (
+                f"{_title_icon('市场信息摘要')} 市场信息摘要\n\n"
+                + "\n\n〰️〰️〰️\n\n".join(alerts_buffer[:3])
+            )
+            if _has_effective_content(msg):
+                send_tg(
+                    msg,
+                    token=settings.TG_BOT_TOKEN_MONITOR,
+                    chat_id=settings.TG_CHAT_ID_MONITOR,
+                )
+            else:
+                _send_health_status(
+                    "最终 Telegram 正文为空",
+                    token=settings.TG_BOT_TOKEN_MONITOR,
+                    chat_id=settings.TG_CHAT_ID_MONITOR,
+                )
+        else:
+            _send_health_status(
+                "DeepSeek 未识别需提醒的市场信息",
                 token=settings.TG_BOT_TOKEN_MONITOR,
                 chat_id=settings.TG_CHAT_ID_MONITOR,
             )
@@ -517,14 +732,19 @@ def run_analysis(mode: str) -> None:
     if mode == "global":
         news = get_news(180)
         if not news:
+            _send_health_status(
+                "海外新闻数据为空，无法生成全球摘要",
+                token=settings.TG_BOT_TOKEN_MONITOR,
+                chat_id=settings.TG_CHAT_ID_MONITOR,
+            )
             return
         news_txt = "\n".join(
             [
-                f"- [{n.get('source', 'unknown')}] {n['title']} (详情:{n['digest'][:40]})"
+                f"{_format_news_prompt_line(n, include_time=False)} (详情:{n['digest'][:40]})"
                 for n in news[:80]
             ]
         )
-        content = get_ai_response(
+        content = _get_ai_response_with_health(
             prompts.get("global", settings.DEFAULT_PROMPTS["global"]).format(
                 news_txt=news_txt
             )
@@ -536,12 +756,24 @@ def run_analysis(mode: str) -> None:
                     "国际宏观与板块雷达",
                     report_time=now.strftime("%Y-%m-%d %H:%M"),
                     source=_format_sources(news, "Reuters / RSS"),
-                    category="海外",
-                    importance="中（市场/板块级）",
+                    category="overseas",
+                    importance="medium",
                     summary=content,
                     impact="用于观察海外事件对全球市场、A股映射板块和风险偏好的可能影响。",
                     links=_format_links([item.get("link") for item in news[:5]]),
+                    market_scope="全球",
+                    related_sectors=[
+                        sector
+                        for item in news[:20]
+                        for sector in item.get("related_sectors", [])
+                    ][:6],
                 ),
+                token=settings.TG_BOT_TOKEN_MONITOR,
+                chat_id=settings.TG_CHAT_ID_MONITOR,
+            )
+        else:
+            _send_health_status(
+                "DeepSeek 没有生成有效摘要或判断无重大事件",
                 token=settings.TG_BOT_TOKEN_MONITOR,
                 chat_id=settings.TG_CHAT_ID_MONITOR,
             )
@@ -555,22 +787,20 @@ def run_analysis(mode: str) -> None:
 
         news = get_news(240)
         if not news:
+            _send_health_status("新闻数据为空，无法生成市场简报")
             return
 
         if mode == "after_market":
             news_txt = "\n".join(
-                [
-                    f"- [{n.get('source', 'unknown')}] {n.get('time_str', '')} {n['title']}"
-                    for n in news[:25]
-                ]
+                [_format_news_prompt_line(n, include_time=True) for n in news[:25]]
             )
         else:
             news_txt = "\n".join(
-                [f"- [{n.get('source', 'unknown')}] {n['title']}" for n in news[:25]]
+                [_format_news_prompt_line(n, include_time=False) for n in news[:25]]
             )
 
         title = "🌇 每日复盘" if mode == "after_market" else "🍵 盘中茶歇"
-        content = get_ai_response(
+        content = _get_ai_response_with_health(
             prompts.get(mode, settings.DEFAULT_PROMPTS[mode]).format(
                 news_txt=news_txt,
                 report_date=now.strftime("%Y-%m-%d"),
@@ -599,10 +829,14 @@ def run_analysis(mode: str) -> None:
                     links=_format_links([item.get("link") for item in news[:5]]),
                 )
             )
+        else:
+            _send_health_status("DeepSeek 没有生成有效摘要")
 
 
 def run_review() -> None:
+    reset_data_source_health()
     if not os.path.exists(settings.HISTORY_FILE):
+        _send_health_status("未找到历史观察记录")
         return
 
     try:
@@ -634,6 +868,7 @@ def run_review() -> None:
             details.append(f"{icon} {row['Name']}: {pct:+.2f}%")
 
         if total_count == 0:
+            _send_health_status("历史观察记录没有可用行情数据")
             return
         win_rate = (win_count / total_count) * 100
         avg_profit = total_profit / total_count
@@ -656,3 +891,4 @@ def run_review() -> None:
         )
     except Exception as exc:
         log_error(f"复盘失败: {exc}")
+        _send_health_status("观察记录复盘发生异常")
