@@ -8,7 +8,12 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from config import settings
-from core.data_fetcher import get_hot_stocks_data, get_market_funds, get_news, get_stock_quote
+from core.data_fetcher import (
+    get_hot_stocks_data,
+    get_market_funds,
+    get_news,
+    get_stock_quote,
+)
 from utils.ai_client import get_ai_response
 from utils.notifier import log_error, log_info, send_tg
 
@@ -104,14 +109,17 @@ def run_recommend() -> None:
         return
 
     candidates_str = "\n".join(
-        [f"- {s['name']} (代码:{s['code']}, 涨幅:{s['pct']}, 成交:{s['amount']})" for s in candidates]
+        [
+            f"- {s['name']} (代码:{s['code']}, 涨幅:{s['pct']}, 成交:{s['amount']})"
+            for s in candidates
+        ]
     )
     news = get_news(720)
     news_txt = "\n".join([f"- {n['title']}" for n in news[:15]])
     base_prompt = (
         "你是极其理性的量化交易员。请从下方的【候选股票列表】中，挑选唯一一只最符合当前市场热点和新闻面的股票。\n\n"
         f"【候选股票列表】:\n{candidates_str}\n\n【近期新闻】:\n{news_txt}\n\n"
-        "要求：\n1. 必须从候选列表中选一只，绝对禁止捏造。\n2. 输出 JSON 格式：{\"name\": \"股票名\", \"code\": \"6位代码\", \"reason\": \"简短理由\"}"
+        '要求：\n1. 必须从候选列表中选一只，绝对禁止捏造。\n2. 输出 JSON 格式：{"name": "股票名", "code": "6位代码", "reason": "简短理由"}'
     )
 
     content = get_ai_response(base_prompt, temperature=0.1)
@@ -180,24 +188,58 @@ def run_analysis(mode: str) -> None:
     prompts = load_prompts()
 
     if mode == "funds":
+        now = datetime.now(settings.SHA_TZ)
         top_in, top_out = get_market_funds()
         if not top_in:
             return
-        in_str = "\n".join([f"- {s['name']}: {s['flow']}亿 ({s['change']})" for s in top_in])
-        out_str = "\n".join([f"- {s['name']}: {s['flow']}亿 ({s['change']})" for s in top_out])
-        content = get_ai_response(prompts.get("funds", settings.DEFAULT_PROMPTS["funds"]).format(in_str=in_str, out_str=out_str))
+        in_str = "\n".join(
+            [f"- {s['name']}: {s['flow']}亿 ({s['change']})" for s in top_in]
+        )
+        out_str = "\n".join(
+            [f"- {s['name']}: {s['flow']}亿 ({s['change']})" for s in top_out]
+        )
+        news = get_news(720)
+        news_txt = "\n".join(
+            [
+                f"- [{n.get('source', 'unknown')}] {n.get('time_str', '')} {n['title']}"
+                for n in news[:20]
+            ]
+        )
+        content = get_ai_response(
+            prompts.get("funds", settings.DEFAULT_PROMPTS["funds"]).format(
+                in_str=in_str,
+                out_str=out_str,
+                news_txt=news_txt or "无重要消息",
+                report_date=now.strftime("%Y-%m-%d"),
+                report_time=now.strftime("%Y-%m-%d %H:%M"),
+            ),
+            model="deepseek-reasoner",
+        )
         if content:
-            send_tg(f"💰 主力资金雷达\n\n{content}")
+            send_tg(f"💰 主力资金雷达 ({now.strftime('%Y-%m-%d')})\n\n{content}")
         return
 
     if mode == "daily":
+        now = datetime.now(settings.SHA_TZ)
         news = get_news(1440)
         if not news:
             return
-        news_txt = "\n".join([f"- [{n.get('source', 'unknown')}] {n['title']}" for n in news[:30]])
-        content = get_ai_response(prompts.get("daily", settings.DEFAULT_PROMPTS["daily"]).format(news_txt=news_txt))
+        news_txt = "\n".join(
+            [
+                f"- [{n.get('source', 'unknown')}] {n.get('time_str', '')} {n['title']}"
+                for n in news[:30]
+            ]
+        )
+        content = get_ai_response(
+            prompts.get("daily", settings.DEFAULT_PROMPTS["daily"]).format(
+                news_txt=news_txt,
+                report_date=now.strftime("%Y-%m-%d"),
+                report_time=now.strftime("%Y-%m-%d %H:%M"),
+            ),
+            model="deepseek-reasoner",
+        )
         if content:
-            send_tg(f"🌅 股市全景内参\n\n{content}")
+            send_tg(f"🌅 股市全景内参 ({now.strftime('%Y-%m-%d')})\n\n{content}")
         return
 
     if mode == "monitor":
@@ -211,7 +253,8 @@ def run_analysis(mode: str) -> None:
             if item["datetime"] >= strict_threshold:
                 fresh_news.append(item)
             elif item["datetime"] >= soft_threshold and any(
-                keyword in f"{item['title']} {item['digest']}" for keyword in HIGH_IMPACT_KEYWORDS
+                keyword in f"{item['title']} {item['digest']}"
+                for keyword in HIGH_IMPACT_KEYWORDS
             ):
                 fresh_news.append(item)
 
@@ -225,8 +268,15 @@ def run_analysis(mode: str) -> None:
                 seen_titles.add(item["title"])
                 dedup_news.append(item)
 
-        news_titles = [f"{i}. [{n.get('source', 'unknown')}] {n['title']} (详情:{n['digest'][:60]})" for i, n in enumerate(dedup_news[:12])]
-        content = get_ai_response(prompts.get("monitor", settings.DEFAULT_PROMPTS["monitor"]).format(news_list="\n".join(news_titles)))
+        news_titles = [
+            f"{i}. [{n.get('source', 'unknown')}] {n['title']} (详情:{n['digest'][:60]})"
+            for i, n in enumerate(dedup_news[:12])
+        ]
+        content = get_ai_response(
+            prompts.get("monitor", settings.DEFAULT_PROMPTS["monitor"]).format(
+                news_list="\n".join(news_titles)
+            )
+        )
         if not content:
             return
 
@@ -250,18 +300,33 @@ def run_analysis(mode: str) -> None:
                 alert_links.append(str(item["link"]))
 
         if alerts_buffer:
-            msg = "🎯 机会雷达汇总\n\n" + "\n\n〰️〰️〰️〰️〰️\n\n".join(alerts_buffer[:3])
+            msg = "🎯 机会雷达汇总\n\n" + "\n\n〰️〰️〰️〰️〰️\n\n".join(
+                alerts_buffer[:3]
+            )
             if alert_links[:3]:
                 msg += "\n\n链接：\n" + "\n".join(alert_links[:3])
-            send_tg(msg, token=settings.TG_BOT_TOKEN_MONITOR, chat_id=settings.TG_CHAT_ID_MONITOR)
+            send_tg(
+                msg,
+                token=settings.TG_BOT_TOKEN_MONITOR,
+                chat_id=settings.TG_CHAT_ID_MONITOR,
+            )
         return
 
     if mode == "global":
         news = get_news(180)
         if not news:
             return
-        news_txt = "\n".join([f"- [{n.get('source', 'unknown')}] {n['title']} (详情:{n['digest'][:40]})" for n in news[:80]])
-        content = get_ai_response(prompts.get("global", settings.DEFAULT_PROMPTS["global"]).format(news_txt=news_txt))
+        news_txt = "\n".join(
+            [
+                f"- [{n.get('source', 'unknown')}] {n['title']} (详情:{n['digest'][:40]})"
+                for n in news[:80]
+            ]
+        )
+        content = get_ai_response(
+            prompts.get("global", settings.DEFAULT_PROMPTS["global"]).format(
+                news_txt=news_txt
+            )
+        )
         if content and "无重大事件" not in content:
             send_tg(
                 f"🌐 国际宏观与板块雷达 (3H)\n\n{content}",
@@ -271,14 +336,42 @@ def run_analysis(mode: str) -> None:
         return
 
     if mode in ["periodic", "after_market"]:
+        now = datetime.now(settings.SHA_TZ)
+        if mode == "after_market" and now.weekday() >= 5:
+            log_info("周末跳过：每日复盘不发送")
+            return
+
         news = get_news(240)
         if not news:
             return
-        news_txt = "\n".join([f"- [{n.get('source', 'unknown')}] {n['title']}" for n in news[:25]])
+
+        if mode == "after_market":
+            news_txt = "\n".join(
+                [
+                    f"- [{n.get('source', 'unknown')}] {n.get('time_str', '')} {n['title']}"
+                    for n in news[:25]
+                ]
+            )
+        else:
+            news_txt = "\n".join(
+                [f"- [{n.get('source', 'unknown')}] {n['title']}" for n in news[:25]]
+            )
+
         title = "🌇 每日复盘" if mode == "after_market" else "🍵 盘中茶歇"
-        content = get_ai_response(prompts.get(mode, settings.DEFAULT_PROMPTS[mode]).format(news_txt=news_txt))
+        content = get_ai_response(
+            prompts.get(mode, settings.DEFAULT_PROMPTS[mode]).format(
+                news_txt=news_txt,
+                report_date=now.strftime("%Y-%m-%d"),
+                report_time=now.strftime("%Y-%m-%d %H:%M"),
+            )
+        )
         if content:
-            send_tg(f"{title}\n\n{content}")
+            message_title = (
+                f"{title} ({now.strftime('%Y-%m-%d')})"
+                if mode == "after_market"
+                else title
+            )
+            send_tg(f"{message_title}\n\n{content}")
 
 
 def run_review() -> None:

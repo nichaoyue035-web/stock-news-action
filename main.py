@@ -52,7 +52,9 @@ def _validate_required_env(mode: str) -> None:
         _fatal(f"❌ 缺少必要环境变量/Secrets ({mode}): {', '.join(missing)}")
 
 
-def _bootstrap_modules() -> Tuple[SimpleRunner, SimpleRunner, AnalysisRunner, SimpleRunner, Logger, Logger]:
+def _bootstrap_modules() -> (
+    Tuple[SimpleRunner, SimpleRunner, AnalysisRunner, SimpleRunner, Logger, Logger]
+):
     """Lazily import runtime modules and return callable handlers."""
     try:
         from core.analyzer import run_recommend, run_track, run_analysis, run_review
@@ -72,7 +74,9 @@ def main() -> None:
     """Program dispatcher for all runtime modes."""
     mode = _resolve_mode(sys.argv)
     _validate_required_env(mode)
-    run_recommend, run_track, run_analysis, run_review, log_info, log_error = _bootstrap_modules()
+    run_recommend, run_track, run_analysis, run_review, log_info, log_error = (
+        _bootstrap_modules()
+    )
     log_info(f"🚀 指挥中心启动 | 目标模式: [{mode}]")
 
     try:
