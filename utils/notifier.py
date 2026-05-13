@@ -12,8 +12,8 @@ from config import settings
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%H:%M:%S'
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("StockBot")
 
@@ -70,7 +70,9 @@ def _prepare_content(content) -> str:
     return text
 
 
-def _split_message(content: str, max_length: int = SAFE_TELEGRAM_CHUNK_LENGTH) -> Iterable[str]:
+def _split_message(
+    content: str, max_length: int = SAFE_TELEGRAM_CHUNK_LENGTH
+) -> Iterable[str]:
     if len(content) <= max_length:
         yield content
         return
@@ -111,7 +113,7 @@ def send_tg(content, token=None, chat_id=None):
         payload = {
             "chat_id": use_chat_id,
             "text": chunk,
-            "disable_web_page_preview": True
+            "disable_web_page_preview": True,
         }
         try:
             resp = requests.post(url, json=payload, timeout=10)

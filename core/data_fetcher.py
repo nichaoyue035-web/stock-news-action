@@ -64,13 +64,19 @@ def _parse_datetime(raw_value: Any) -> Optional[datetime.datetime]:
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S%z"):
         try:
             dt = datetime.datetime.strptime(text, fmt)
-            return dt.replace(tzinfo=settings.SHA_TZ) if dt.tzinfo is None else dt.astimezone(settings.SHA_TZ)
+            return (
+                dt.replace(tzinfo=settings.SHA_TZ)
+                if dt.tzinfo is None
+                else dt.astimezone(settings.SHA_TZ)
+            )
         except ValueError:
             continue
     return None
 
 
-def _fetch_external_rss_news(minutes_lookback: Optional[int] = None) -> list[dict[str, Any]]:
+def _fetch_external_rss_news(
+    minutes_lookback: Optional[int] = None,
+) -> list[dict[str, Any]]:
     """从海外+自定义 RSS 信息源获取新闻。"""
     if not settings.EXTERNAL_NEWS_RSS:
         return []
@@ -92,7 +98,9 @@ def _fetch_external_rss_news(minutes_lookback: Optional[int] = None) -> list[dic
         source_host = urlparse(feed_url).netloc or "custom"
         for node in root.findall(".//item") + root.findall(".//entry"):
             title = _strip_html(node.findtext("title"))
-            digest = _strip_html(node.findtext("description") or node.findtext("summary"))
+            digest = _strip_html(
+                node.findtext("description") or node.findtext("summary")
+            )
             link = node.findtext("link")
             if not link:
                 link_node = node.find("link")
@@ -110,7 +118,8 @@ def _fetch_external_rss_news(minutes_lookback: Optional[int] = None) -> list[dic
 
             items.append(
                 {
-                    "title": title or (digest[:50] + "..." if len(digest) > 50 else digest),
+                    "title": title
+                    or (digest[:50] + "..." if len(digest) > 50 else digest),
                     "digest": digest,
                     "link": link or feed_url,
                     "time_str": news_time.strftime("%H:%M"),
@@ -133,7 +142,9 @@ def _extract_json_object(raw_text: str) -> Optional[dict[str, Any]]:
         return None
 
 
-def _normalize_external_news(news_items: list[dict[str, Any]], max_translate_items: int = 20) -> list[dict[str, Any]]:
+def _normalize_external_news(
+    news_items: list[dict[str, Any]], max_translate_items: int = 20
+) -> list[dict[str, Any]]:
     """使用 DeepSeek 批量判断语言并翻译非中文新闻。"""
     if not news_items:
         return []
@@ -181,15 +192,21 @@ def _normalize_external_news(news_items: list[dict[str, Any]], max_translate_ite
             continue
 
         translated_item = dict(item)
-        translated_item["title"] = str(row.get("title_zh") or item.get("title", "")).strip()
-        translated_item["digest"] = str(row.get("digest_zh") or item.get("digest", "")).strip()
+        translated_item["title"] = str(
+            row.get("title_zh") or item.get("title", "")
+        ).strip()
+        translated_item["digest"] = str(
+            row.get("digest_zh") or item.get("digest", "")
+        ).strip()
         translated_item["translated"] = True
         normalized.append(translated_item)
 
     return normalized + news_items[max_translate_items:]
 
 
-def _refine_news(news_items: list[dict[str, Any]], max_items: int = 120) -> list[dict[str, Any]]:
+def _refine_news(
+    news_items: list[dict[str, Any]], max_items: int = 120
+) -> list[dict[str, Any]]:
     """按标题去重并限制数量，输出更精简新闻流。"""
     refined: list[dict[str, Any]] = []
     seen_titles: set[str] = set()
@@ -234,9 +251,9 @@ def get_news(minutes_lookback: Optional[int] = None) -> list[dict[str, Any]]:
 
             show_time_str = item.get("showtime")
             try:
-                news_time = datetime.datetime.strptime(str(show_time_str), "%Y-%m-%d %H:%M:%S").replace(
-                    tzinfo=settings.SHA_TZ
-                )
+                news_time = datetime.datetime.strptime(
+                    str(show_time_str), "%Y-%m-%d %H:%M:%S"
+                ).replace(tzinfo=settings.SHA_TZ)
             except ValueError:
                 continue
 
@@ -288,7 +305,9 @@ def get_market_funds() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         "fields": "f12,f14,f2,f3,f62",
     }
     try:
-        resp = requests.get(settings.URL_FUNDS, headers=get_random_header(), params=params, timeout=10)
+        resp = requests.get(
+            settings.URL_FUNDS, headers=get_random_header(), params=params, timeout=10
+        )
         data = resp.json().get("data", {}).get("diff", [])
         if not isinstance(data, list):
             return [], []
@@ -332,7 +351,9 @@ def get_hot_stocks_data() -> list[dict[str, Any]]:
         "fields": "f12,f14,f3,f6",
     }
     try:
-        resp = requests.get(settings.URL_FUNDS, headers=get_random_header(), params=params, timeout=10)
+        resp = requests.get(
+            settings.URL_FUNDS, headers=get_random_header(), params=params, timeout=10
+        )
         data = resp.json().get("data", {}).get("diff", [])
         if not isinstance(data, list):
             return []
@@ -360,7 +381,9 @@ def get_hot_stocks_data() -> list[dict[str, Any]]:
         return []
 
 
-def _normalize_eastmoney_decimal(raw_value: Any, scale: int = 100, digits: int = 2) -> str:
+def _normalize_eastmoney_decimal(
+    raw_value: Any, scale: int = 100, digits: int = 2
+) -> str:
     """将东方财富常见的放大整数行情字段还原为小数文本。"""
     if raw_value in (None, "-", ""):
         return "-"
