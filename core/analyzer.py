@@ -355,6 +355,25 @@ def _infer_market_importance(item: dict[str, Any]) -> str:
     return "中（待确认板块影响）"
 
 
+def _title_icon(title: str) -> str:
+    """Pick a Telegram title icon by message type instead of using one icon everywhere."""
+    icon_map = (
+        ("资金", "💰"),
+        ("国际", "🌍"),
+        ("宏观", "🌍"),
+        ("每日复盘", "🌇"),
+        ("盘中茶歇", "🍵"),
+        ("市场信息", "📰"),
+        ("市场观察", "🔎"),
+        ("观察标的", "👀"),
+        ("复盘辅助", "🧾"),
+    )
+    for keyword, icon in icon_map:
+        if keyword in title:
+            return icon
+    return "📌"
+
+
 def _format_market_message(
     title: str,
     *,
@@ -370,7 +389,7 @@ def _format_market_message(
     include_title: bool = True,
 ) -> str:
     """Build a stable Telegram information template."""
-    title_prefix = f"📌 {title}\n\n" if include_title else ""
+    title_prefix = f"{_title_icon(title)} {title}\n\n" if include_title else ""
     message = (
         f"{title_prefix}"
         f"【时间】{report_time or '未知'}\n"
@@ -686,7 +705,10 @@ def run_analysis(mode: str) -> None:
                 )
 
         if alerts_buffer:
-            msg = "📌 市场信息摘要\n\n" + "\n\n〰️〰️〰️\n\n".join(alerts_buffer[:3])
+            msg = (
+                f"{_title_icon('市场信息摘要')} 市场信息摘要\n\n"
+                + "\n\n〰️〰️〰️\n\n".join(alerts_buffer[:3])
+            )
             if _has_effective_content(msg):
                 send_tg(
                     msg,
