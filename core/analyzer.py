@@ -180,14 +180,28 @@ def run_analysis(mode: str) -> None:
     prompts = load_prompts()
 
     if mode == "funds":
+        now = datetime.now(settings.SHA_TZ)
         top_in, top_out = get_market_funds()
         if not top_in:
             return
         in_str = "\n".join([f"- {s['name']}: {s['flow']}亿 ({s['change']})" for s in top_in])
         out_str = "\n".join([f"- {s['name']}: {s['flow']}亿 ({s['change']})" for s in top_out])
-        content = get_ai_response(prompts.get("funds", settings.DEFAULT_PROMPTS["funds"]).format(in_str=in_str, out_str=out_str))
+        news = get_news(720)
+        news_txt = "\n".join(
+            [f"- [{n.get('source', 'unknown')}] {n.get('time_str', '')} {n['title']}" for n in news[:20]]
+        )
+        content = get_ai_response(
+            prompts.get("funds", settings.DEFAULT_PROMPTS["funds"]).format(
+                in_str=in_str,
+                out_str=out_str,
+                news_txt=news_txt or "无重要消息",
+                report_date=now.strftime("%Y-%m-%d"),
+                report_time=now.strftime("%Y-%m-%d %H:%M"),
+            ),
+            model="deepseek-reasoner",
+        )
         if content:
-            send_tg(f"💰 主力资金雷达\n\n{content}")
+            send_tg(f"💰 主力资金雷达 ({now.strftime('%Y-%m-%d')})\n\n{content}")
         return
 
     if mode == "daily":
