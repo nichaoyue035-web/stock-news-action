@@ -55,6 +55,16 @@ IMPORTANCE_LABELS: dict[str, str] = {
     "low": "低",
 }
 
+WEEKDAY_NAMES: tuple[str, ...] = (
+    "周一",
+    "周二",
+    "周三",
+    "周四",
+    "周五",
+    "周六",
+    "周日",
+)
+
 
 def load_prompts() -> dict[str, str]:
     """Load prompt templates from file; fallback to defaults on any error."""
@@ -258,6 +268,11 @@ def _get_ai_response_with_health(*args, **kwargs) -> Optional[str]:
 def _has_effective_content(content: Any) -> bool:
     """Return whether a generated Telegram body has visible text."""
     return bool(str(content or "").strip())
+
+
+def _format_weekday(moment: datetime) -> str:
+    """Return a Chinese weekday label for Shanghai-local report context."""
+    return WEEKDAY_NAMES[moment.weekday()]
 
 
 def _infer_news_category(item: dict[str, Any]) -> str:
@@ -781,8 +796,9 @@ def run_analysis(mode: str) -> None:
 
     if mode in ["periodic", "after_market"]:
         now = datetime.now(settings.SHA_TZ)
+        report_weekday = _format_weekday(now)
         if mode == "after_market" and now.weekday() >= 5:
-            log_info("周末跳过：每日复盘不发送")
+            log_info(f"周末跳过：{now.strftime('%Y-%m-%d')} {report_weekday} A股休市，每日复盘不发送")
             return
 
         news = get_news(240)
@@ -805,7 +821,9 @@ def run_analysis(mode: str) -> None:
                 news_txt=news_txt,
                 report_date=now.strftime("%Y-%m-%d"),
                 report_time=now.strftime("%Y-%m-%d %H:%M"),
-            )
+                report_weekday=report_weekday,
+            ),
+            model="deepseek-reasoner" if mode == "after_market" else "deepseek-chat",
         )
         if content:
             category = "复盘" if mode == "after_market" else "盘中"
