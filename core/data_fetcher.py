@@ -351,6 +351,7 @@ def _fetch_external_rss_news(
 
     if not settings.EXTERNAL_NEWS_RSS:
         log_info("RSS URL empty, skipped")
+        log_info("RSS 汇总：skipped, returned_count=0, reason=未配置")
         record_data_source_health("海外 RSS", "skipped", "未配置", 0)
         return []
 
@@ -408,9 +409,8 @@ def _fetch_external_rss_news(
                 continue
 
             nodes = _iter_rss_entries(root)
-            log_info(f"RSS 解析成功 [{feed_url}]: item_entry_count={len(nodes)}")
-            record_data_source_health(source_name, "success", "", len(nodes))
             successful_feeds += 1
+            feed_item_count = 0
 
         except requests.Timeout:
             reason = "timeout"
@@ -453,14 +453,29 @@ def _fetch_external_rss_news(
                     "source": source_host,
                 }
             )
+            feed_item_count += 1
+
+        log_info(
+            f"RSS 抓取成功 [{feed_url}]: entry_count={len(nodes)}, "
+            f"returned_count={feed_item_count}"
+        )
+        record_data_source_health(source_name, "success", "", feed_item_count)
 
     if successful_feeds == 0 and failures:
+        log_error(
+            f"RSS 汇总：failed, returned_count={len(items)}, reason={failures[0]}"
+        )
         record_data_source_health("海外 RSS", "failed", failures[0], len(items))
     elif failures:
+        log_error(
+            f"RSS 汇总：partial, successful_feeds={successful_feeds}, "
+            f"returned_count={len(items)}, first_failure={failures[0]}"
+        )
         record_data_source_health(
             "海外 RSS", "partial", f"部分失败：{failures[0]}", len(items)
         )
     else:
+        log_info(f"RSS 汇总：success, returned_count={len(items)}")
         record_data_source_health("海外 RSS", "success", "", len(items))
     return items
 
@@ -739,6 +754,7 @@ def get_news(minutes_lookback: Optional[int] = None) -> list[dict[str, Any]]:
 
     try:
         resp = requests.get(url, headers=get_random_header(), timeout=15)
+        log_info(f"东方财富快讯 HTTP 状态: status={resp.status_code}")
         payload = _extract_json_payload(resp.text.strip())
         valid_news: list[dict[str, Any]] = []
 
@@ -746,13 +762,16 @@ def get_news(minutes_lookback: Optional[int] = None) -> list[dict[str, Any]]:
             items = payload.get("LivesList", [])
             if not isinstance(items, list):
                 items = []
-                record_data_source_health(
-                    "东方财富快讯", "failed", "LivesList 格式异常", 0
-                )
+                reason = "LivesList 格式异常"
+                record_data_source_health("东方财富快讯", "failed", reason, 0)
+                log_error(f"东方财富快讯抓取失败: reason={reason}")
         else:
             items = []
-            record_data_source_health("东方财富快讯", "failed", "返回格式异常", 0)
+            reason = "返回格式异常"
+            record_data_source_health("东方财富快讯", "failed", reason, 0)
+            log_error(f"东方财富快讯抓取失败: reason={reason}")
 
+        raw_eastmoney_count = len(items)
         now = datetime.datetime.now(settings.SHA_TZ)
         delta = timedelta(minutes=minutes_lookback if minutes_lookback else 1440)
         time_threshold = now - delta
@@ -790,6 +809,15 @@ def get_news(minutes_lookback: Optional[int] = None) -> list[dict[str, Any]]:
 
         if "东方财富快讯" not in DATA_SOURCE_HEALTH:
             record_data_source_health("东方财富快讯", "success", "", len(valid_news))
+            log_info(
+                f"东方财富快讯抓取成功: raw_count={raw_eastmoney_count}, "
+                f"returned_count={len(valid_news)}"
+            )
+        else:
+            log_error(
+                f"东方财富快讯无可用数据: raw_count={raw_eastmoney_count}, "
+                f"returned_count={len(valid_news)}"
+            )
 
         external_news = _fetch_external_rss_news(minutes_lookback)
         normalized_external_news = _normalize_external_news(external_news)
@@ -797,18 +825,34 @@ def get_news(minutes_lookback: Optional[int] = None) -> list[dict[str, Any]]:
         merged_news = valid_news + normalized_external_news
         merged_news.sort(key=lambda x: x["datetime"], reverse=True)
         refined_news = _deduplicate_semantic_news(_refine_news(merged_news))
-        return enrich_news_items(refined_news)
+        enriched_news = enrich_news_items(refined_news)
+        log_info(
+            f"新闻抓取汇总: eastmoney_count={len(valid_news)}, "
+            f"rss_count={len(normalized_external_news)}, "
+            f"merged_count={len(merged_news)}, final_count={len(enriched_news)}, "
+            "fallback_used=false"
+        )
+        return enriched_news
     except Exception as exc:
         reason = _redact_sensitive_text(exc)
         record_data_source_health("东方财富快讯", "failed", reason, 0)
-        log_error(f"❌ 新闻抓取失败: {reason}")
+        log_error(f"❌ 东方财富快讯抓取失败: reason={reason}")
+        log_info("新闻抓取 fallback: 使用 RSS 数据继续生成结果")
         external_news = _fetch_external_rss_news(minutes_lookback)
         normalized_external_news = _normalize_external_news(external_news)
         normalized_external_news.sort(key=lambda x: x["datetime"], reverse=True)
         refined_news = _deduplicate_semantic_news(
             _refine_news(normalized_external_news)
         )
-        return enrich_news_items(refined_news)
+        enriched_news = enrich_news_items(refined_news)
+        log_info(
+            f"新闻抓取汇总: eastmoney_count=0, "
+            f"rss_count={len(normalized_external_news)}, "
+            f"merged_count={len(normalized_external_news)}, "
+            f"final_count={len(enriched_news)}, "
+            "fallback_used=true"
+        )
+        return enriched_news
 
 
 def get_market_funds() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
