@@ -184,6 +184,29 @@ def _print_run_summary() -> None:
         print(f"{key}={value}")
 
 
+def _print_monitor_filter_summary(
+    *,
+    input_items: int,
+    after_time_filter: int,
+    after_keyword_filter: int,
+    after_dedup: int,
+    final_alert_items: int,
+    decision: str,
+    reason: str = "",
+) -> None:
+    """Print monitor-only filter diagnostics to stdout/GitHub Actions logs."""
+    print("[FILTER]", flush=True)
+    print("mode=monitor", flush=True)
+    print(f"input_items={input_items}", flush=True)
+    print(f"after_time_filter={after_time_filter}", flush=True)
+    print(f"after_keyword_filter={after_keyword_filter}", flush=True)
+    print(f"after_dedup={after_dedup}", flush=True)
+    print(f"final_alert_items={final_alert_items}", flush=True)
+    print(f"decision={decision}", flush=True)
+    if reason:
+        print(f"reason={reason}", flush=True)
+
+
 def _with_run_summary(mode_value: str | Callable[..., str]):
     """Decorate public modes with a console-only summary lifecycle."""
 
@@ -805,7 +828,17 @@ def run_analysis(mode: str) -> None:
     if mode == "monitor":
         news = get_news(90)
         _record_news_summary(news)
+        input_items = len(news)
         if not news:
+            _print_monitor_filter_summary(
+                input_items=input_items,
+                after_time_filter=0,
+                after_keyword_filter=0,
+                after_dedup=0,
+                final_alert_items=0,
+                decision="skip",
+                reason="no input news",
+            )
             _send_health_status(
                 "新闻数据为空，无法生成监控摘要",
                 token=settings.TG_BOT_TOKEN_MONITOR,
@@ -817,8 +850,10 @@ def run_analysis(mode: str) -> None:
         soft_threshold = now - timedelta(minutes=30)
 
         fresh_news: list[dict[str, Any]] = []
+        after_time_filter = 0
         for item in news:
             if item["datetime"] >= strict_threshold:
+                after_time_filter += 1
                 fresh_news.append(item)
             elif item["datetime"] >= soft_threshold and any(
                 keyword in f"{item['title']} {item['digest']}"
@@ -826,7 +861,17 @@ def run_analysis(mode: str) -> None:
             ):
                 fresh_news.append(item)
 
+        after_keyword_filter = len(fresh_news)
         if not fresh_news:
+            _print_monitor_filter_summary(
+                input_items=input_items,
+                after_time_filter=after_time_filter,
+                after_keyword_filter=after_keyword_filter,
+                after_dedup=0,
+                final_alert_items=0,
+                decision="skip",
+                reason="no important market news in time window",
+            )
             _send_health_status(
                 "未发现符合时间窗口的重要市场信息",
                 token=settings.TG_BOT_TOKEN_MONITOR,
@@ -841,6 +886,7 @@ def run_analysis(mode: str) -> None:
                 seen_titles.add(item["title"])
                 dedup_news.append(item)
 
+        after_dedup = len(dedup_news)
         news_titles = [
             (
                 f"{i}. [{n.get('source', 'unknown')}] "
@@ -857,6 +903,15 @@ def run_analysis(mode: str) -> None:
             )
         )
         if not content:
+            _print_monitor_filter_summary(
+                input_items=input_items,
+                after_time_filter=after_time_filter,
+                after_keyword_filter=after_keyword_filter,
+                after_dedup=after_dedup,
+                final_alert_items=0,
+                decision="skip",
+                reason="ai returned empty monitor summary",
+            )
             _send_health_status(
                 "DeepSeek 没有生成有效摘要",
                 token=settings.TG_BOT_TOKEN_MONITOR,
@@ -894,24 +949,51 @@ def run_analysis(mode: str) -> None:
                     )
                 )
 
+        final_alert_items = len(alerts_buffer[:3])
         if alerts_buffer:
             msg = (
                 f"{_title_icon('市场信息摘要')} 市场信息摘要\n\n"
                 + "\n\n〰️〰️〰️\n\n".join(alerts_buffer[:3])
             )
             if _has_effective_content(msg):
+                _print_monitor_filter_summary(
+                    input_items=input_items,
+                    after_time_filter=after_time_filter,
+                    after_keyword_filter=after_keyword_filter,
+                    after_dedup=after_dedup,
+                    final_alert_items=final_alert_items,
+                    decision="send",
+                )
                 _send_tg_with_summary(
                     msg,
                     token=settings.TG_BOT_TOKEN_MONITOR,
                     chat_id=settings.TG_CHAT_ID_MONITOR,
                 )
             else:
+                _print_monitor_filter_summary(
+                    input_items=input_items,
+                    after_time_filter=after_time_filter,
+                    after_keyword_filter=after_keyword_filter,
+                    after_dedup=after_dedup,
+                    final_alert_items=final_alert_items,
+                    decision="skip",
+                    reason="final telegram body empty",
+                )
                 _send_health_status(
                     "最终 Telegram 正文为空",
                     token=settings.TG_BOT_TOKEN_MONITOR,
                     chat_id=settings.TG_CHAT_ID_MONITOR,
                 )
         else:
+            _print_monitor_filter_summary(
+                input_items=input_items,
+                after_time_filter=after_time_filter,
+                after_keyword_filter=after_keyword_filter,
+                after_dedup=after_dedup,
+                final_alert_items=0,
+                decision="skip",
+                reason="ai returned no alert lines",
+            )
             _send_health_status(
                 "DeepSeek 未识别需提醒的市场信息",
                 token=settings.TG_BOT_TOKEN_MONITOR,
