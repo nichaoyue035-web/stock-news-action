@@ -645,7 +645,13 @@ def run_analysis(mode: str) -> None:
         run_global(prompts)
         return
 
-    if mode in ["periodic", "after_market"]:
+    if mode == "periodic":
+        from core.analyzers.periodic import run_periodic
+
+        run_periodic(prompts)
+        return
+
+    if mode in ["after_market"]:
         now = datetime.now(settings.SHA_TZ)
         report_weekday = _format_weekday(now)
         if mode == "after_market" and now.weekday() >= 5:
