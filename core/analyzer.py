@@ -5,7 +5,8 @@ import json
 import os
 import re
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from functools import wraps
+from typing import Any, Callable, Optional
 
 from config import settings
 from core.data_fetcher import (
@@ -65,6 +66,154 @@ WEEKDAY_NAMES: tuple[str, ...] = (
     "周日",
 )
 
+
+CURRENT_RUN_SUMMARY: dict[str, Any] | None = None
+
+
+def _start_run_summary(mode: str) -> None:
+    """Initialize console-only run summary for the current execution."""
+    global CURRENT_RUN_SUMMARY
+    CURRENT_RUN_SUMMARY = {
+        "mode": mode,
+        "data_fetch_success": None,
+        "news_count": None,
+        "rss_count": None,
+        "ai_called": False,
+        "telegram_attempted": False,
+        "telegram_sent": False,
+        "status": None,
+        "reason": "",
+    }
+
+
+def _get_run_summary() -> dict[str, Any] | None:
+    """Return the active console-only run summary, if one exists."""
+    return CURRENT_RUN_SUMMARY
+
+
+def _set_run_summary(**updates: Any) -> None:
+    """Update the active console-only run summary without touching Telegram content."""
+    summary = _get_run_summary()
+    if summary is not None:
+        summary.update(updates)
+
+
+def _set_run_reason(reason: str, status: str | None = None) -> None:
+    """Record a concise run result reason for logs only."""
+    clean_reason = str(reason or "").strip()
+    if not clean_reason:
+        return
+
+    summary = _get_run_summary()
+    if summary is None:
+        return
+
+    if not summary.get("reason"):
+        summary["reason"] = clean_reason
+    if status:
+        summary["status"] = status
+
+
+def _record_news_summary(news: list[dict[str, Any]]) -> None:
+    """Record collected news/RSS counts for the console-only run summary."""
+    health = get_data_source_health()
+    rss_state = health.get("海外 RSS", {})
+    rss_count = rss_state.get("count")
+    summary = _get_run_summary()
+    updates: dict[str, Any] = {
+        "news_count": len(news),
+        "rss_count": rss_count,
+    }
+    if summary is None or summary.get("data_fetch_success") is None:
+        updates["data_fetch_success"] = bool(news)
+    if news and any(
+        state.get("status") in {"failed", "partial"}
+        for name, state in health.items()
+        if name != "DeepSeek"
+    ):
+        updates["status"] = "partial"
+    _set_run_summary(**updates)
+
+
+def _record_fetch_success(success: bool) -> None:
+    """Record whether the mode's primary data fetch had usable data."""
+    _set_run_summary(data_fetch_success=success)
+
+
+def _derive_run_status(summary: dict[str, Any]) -> str:
+    """Derive success/partial/failed without claiming false success."""
+    if summary.get("status"):
+        return str(summary["status"])
+    if summary.get("telegram_attempted") and summary.get("telegram_sent"):
+        return "success"
+    if summary.get("telegram_attempted") and not summary.get("telegram_sent"):
+        return "failed"
+    if summary.get("data_fetch_success") is False:
+        return "failed"
+    if summary.get("reason"):
+        return "partial"
+    return "success"
+
+
+def _print_run_summary() -> None:
+    """Print a compact run summary to stdout/GitHub Actions logs only."""
+    summary = _get_run_summary()
+    if summary is None:
+        return
+
+    summary["status"] = _derive_run_status(summary)
+    print("[RUN SUMMARY]")
+    for key in (
+        "mode",
+        "data_fetch_success",
+        "news_count",
+        "rss_count",
+        "ai_called",
+        "telegram_attempted",
+        "telegram_sent",
+        "status",
+        "reason",
+    ):
+        value = summary.get(key)
+        if key == "reason" and not value:
+            continue
+        if value is None:
+            value = "null"
+        elif isinstance(value, bool):
+            value = str(value).lower()
+        print(f"{key}={value}")
+
+
+def _with_run_summary(mode_value: str | Callable[..., str]):
+    """Decorate public modes with a console-only summary lifecycle."""
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            mode = mode_value(*args, **kwargs) if callable(mode_value) else mode_value
+            _start_run_summary(str(mode))
+            try:
+                return func(*args, **kwargs)
+            finally:
+                _print_run_summary()
+
+        return wrapper
+
+    return decorator
+
+
+def _send_tg_with_summary(content: Any, **kwargs: Any) -> None:
+    """Send Telegram normally while tracking attempt/success in console logs only."""
+    _set_run_summary(telegram_attempted=True)
+    try:
+        send_tg(content, **kwargs)
+    except Exception as exc:
+        _set_run_summary(telegram_sent=False, status="failed")
+        _set_run_reason(f"telegram send failed: {exc.__class__.__name__}")
+        raise
+    summary = _get_run_summary() or {}
+    status = "partial" if summary.get("status") == "partial" else "success"
+    _set_run_summary(telegram_sent=True, status=status)
 
 def load_prompts() -> dict[str, str]:
     """Load prompt templates from file; fallback to defaults on any error."""
@@ -252,11 +401,25 @@ def _send_health_status(
 ) -> None:
     """Log health diagnostics without sending no-content Telegram messages."""
     _ = (token, chat_id)
+    failure_markers = (
+        "数据为空",
+        "未找到",
+        "无法",
+        "读取失败",
+        "发生异常",
+        "失败",
+        "正文为空",
+    )
+    status = (
+        "failed" if any(marker in reason for marker in failure_markers) else "partial"
+    )
+    _set_run_reason(reason, status=status)
     log_info(_format_health_status_message(reason))
 
 
 def _get_ai_response_with_health(*args, **kwargs) -> Optional[str]:
     """Call DeepSeek through the existing client and record concise health state."""
+    _set_run_summary(ai_called=True)
     content = get_ai_response(*args, **kwargs)
     if str(content or "").strip():
         record_data_source_health("DeepSeek", "success", "", 1)
@@ -420,10 +583,12 @@ def _format_market_message(
     return message
 
 
+@_with_run_summary("recommend")
 def run_recommend() -> None:
     reset_data_source_health()
     log_info("启动：AI 选股推荐")
     candidates = get_hot_stocks_data()
+    _record_fetch_success(bool(candidates))
     if not candidates:
         _send_health_status("热门股数据为空，无法生成观察记录")
         return
@@ -435,6 +600,7 @@ def run_recommend() -> None:
         ]
     )
     news = get_news(720)
+    _record_news_summary(news)
     news_txt = "\n".join(
         [_format_news_prompt_line(n, include_time=False) for n in news[:15]]
     )
@@ -455,6 +621,7 @@ def run_recommend() -> None:
         return
 
     quote = get_stock_quote(pick_data["code"])
+    _record_fetch_success(bool(quote))
     if not quote:
         _send_health_status("个股行情为空，无法生成观察记录")
         return
@@ -464,6 +631,7 @@ def run_recommend() -> None:
             json.dump(pick_data, file, ensure_ascii=False, indent=2)
     except Exception as exc:
         log_error(f"❌ 选股结果写入失败: {exc}")
+        _set_run_reason("选股结果写入失败", status="failed")
         return
 
     _append_history(pick_data, quote["price"])
@@ -479,11 +647,12 @@ def run_recommend() -> None:
         links="未知",
     )
     if _has_effective_content(message):
-        send_tg(message)
+        _send_tg_with_summary(message)
     else:
         _send_health_status("最终 Telegram 正文为空")
 
 
+@_with_run_summary("track")
 def run_track() -> None:
     reset_data_source_health()
     if not os.path.exists(settings.PICK_FILE):
@@ -500,6 +669,7 @@ def run_track() -> None:
 
     try:
         quote = get_stock_quote(pick_data["code"])
+        _record_fetch_success(bool(quote))
         if not quote:
             _send_health_status("个股行情为空，无法跟踪观察标的")
             return
@@ -530,7 +700,7 @@ def run_track() -> None:
             links="未知",
         )
         if _has_effective_content(message):
-            send_tg(message)
+            _send_tg_with_summary(message)
         else:
             _send_health_status("最终 Telegram 正文为空")
     except Exception as exc:
@@ -538,6 +708,7 @@ def run_track() -> None:
         _send_health_status("观察标的跟踪发生异常")
 
 
+@_with_run_summary(lambda mode: mode)
 def run_analysis(mode: str) -> None:
     reset_data_source_health()
     log_info(f"启动：通用分析模式 [{mode}]")
@@ -546,6 +717,7 @@ def run_analysis(mode: str) -> None:
     if mode == "funds":
         now = datetime.now(settings.SHA_TZ)
         top_in, top_out = get_market_funds()
+        _record_fetch_success(bool(top_in))
         if not top_in:
             _send_health_status("资金流数据为空，无法生成资金流摘要")
             return
@@ -556,6 +728,7 @@ def run_analysis(mode: str) -> None:
             [f"- {s['name']}: {s['flow']}亿 ({s['change']})" for s in top_out]
         )
         news = get_news(720)
+        _record_news_summary(news)
         news_txt = "\n".join(
             [_format_news_prompt_line(n, include_time=True) for n in news[:20]]
         )
@@ -570,7 +743,7 @@ def run_analysis(mode: str) -> None:
             model="deepseek-reasoner",
         )
         if content:
-            send_tg(
+            _send_tg_with_summary(
                 _format_market_message(
                     "主力资金雷达",
                     report_time=now.strftime("%Y-%m-%d %H:%M"),
@@ -591,6 +764,7 @@ def run_analysis(mode: str) -> None:
     if mode == "daily":
         now = datetime.now(settings.SHA_TZ)
         news = get_news(1440)
+        _record_news_summary(news)
         if not news:
             _send_health_status("新闻数据为空，无法生成每日摘要")
             return
@@ -606,7 +780,7 @@ def run_analysis(mode: str) -> None:
             model="deepseek-reasoner",
         )
         if content:
-            send_tg(
+            _send_tg_with_summary(
                 _format_market_message(
                     "今日市场信息摘要",
                     report_time=now.strftime("%Y-%m-%d %H:%M"),
@@ -630,6 +804,7 @@ def run_analysis(mode: str) -> None:
 
     if mode == "monitor":
         news = get_news(90)
+        _record_news_summary(news)
         if not news:
             _send_health_status(
                 "新闻数据为空，无法生成监控摘要",
@@ -725,7 +900,7 @@ def run_analysis(mode: str) -> None:
                 + "\n\n〰️〰️〰️\n\n".join(alerts_buffer[:3])
             )
             if _has_effective_content(msg):
-                send_tg(
+                _send_tg_with_summary(
                     msg,
                     token=settings.TG_BOT_TOKEN_MONITOR,
                     chat_id=settings.TG_CHAT_ID_MONITOR,
@@ -746,6 +921,7 @@ def run_analysis(mode: str) -> None:
 
     if mode == "global":
         news = get_news(180)
+        _record_news_summary(news)
         if not news:
             _send_health_status(
                 "海外新闻数据为空，无法生成全球摘要",
@@ -766,7 +942,7 @@ def run_analysis(mode: str) -> None:
         )
         if content and "无重大事件" not in content:
             now = datetime.now(settings.SHA_TZ)
-            send_tg(
+            _send_tg_with_summary(
                 _format_market_message(
                     "国际宏观与板块雷达",
                     report_time=now.strftime("%Y-%m-%d %H:%M"),
@@ -798,10 +974,14 @@ def run_analysis(mode: str) -> None:
         now = datetime.now(settings.SHA_TZ)
         report_weekday = _format_weekday(now)
         if mode == "after_market" and now.weekday() >= 5:
-            log_info(f"周末跳过：{now.strftime('%Y-%m-%d')} {report_weekday} A股休市，每日复盘不发送")
+            log_info(
+                f"周末跳过：{now.strftime('%Y-%m-%d')} {report_weekday} A股休市，每日复盘不发送"
+            )
+            _set_run_reason("market closed", status="success")
             return
 
         news = get_news(240)
+        _record_news_summary(news)
         if not news:
             _send_health_status("新闻数据为空，无法生成市场简报")
             return
@@ -835,7 +1015,7 @@ def run_analysis(mode: str) -> None:
                 if mode == "after_market"
                 else "用于盘中快速过滤新闻噪音和观察市场情绪。"
             )
-            send_tg(
+            _send_tg_with_summary(
                 _format_market_message(
                     title,
                     report_time=now.strftime("%Y-%m-%d %H:%M"),
@@ -851,6 +1031,7 @@ def run_analysis(mode: str) -> None:
             _send_health_status("DeepSeek 没有生成有效摘要")
 
 
+@_with_run_summary("review")
 def run_review() -> None:
     reset_data_source_health()
     if not os.path.exists(settings.HISTORY_FILE):
@@ -885,6 +1066,7 @@ def run_review() -> None:
             icon = "🔴" if pct > 0 else "🟢"
             details.append(f"{icon} {row['Name']}: {pct:+.2f}%")
 
+        _record_fetch_success(total_count > 0)
         if total_count == 0:
             _send_health_status("历史观察记录没有可用行情数据")
             return
@@ -895,7 +1077,7 @@ def run_review() -> None:
             f"观察样本正收益占比: {win_rate:.0f}%\n"
             f"观察样本平均变化: {avg_profit:+.2f}%\n" + "\n".join(details)
         )
-        send_tg(
+        _send_tg_with_summary(
             _format_market_message(
                 "观察记录复盘辅助",
                 report_time=now.strftime("%Y-%m-%d %H:%M"),
