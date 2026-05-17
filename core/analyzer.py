@@ -4,17 +4,14 @@ import csv
 import json
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from functools import wraps
 from typing import Any, Callable, Optional
 
 from config import settings
 from core.data_fetcher import (
     get_data_source_health,
-    get_hot_stocks_data,
-    get_market_funds,
     get_news,
-    get_stock_quote,
     record_data_source_health,
     reset_data_source_health,
 )
