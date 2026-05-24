@@ -172,7 +172,16 @@ def _format_health_status_message(reason: str, formatter) -> str:
     return "\n".join(lines)
 
 
-def _send_health_status(reason: str, formatter, token: str | None = None, chat_id: str | None = None) -> None:
+def _send_health_status(
+    reason: str,
+    formatter=None,
+    token: str | None = None,
+    chat_id: str | None = None,
+) -> None:
+    if formatter is None:
+        from core.formatter import _format_source_health_line
+
+        formatter = _format_source_health_line
     _ = (token, chat_id)
     failure_markers = ("数据为空", "未找到", "无法", "读取失败", "发生异常", "失败", "正文为空")
     status = "failed" if any(marker in reason for marker in failure_markers) else "partial"
