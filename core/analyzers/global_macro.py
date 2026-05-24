@@ -10,15 +10,19 @@ from core.data_fetcher import get_news
 
 def run_global(prompts: dict[str, str]) -> None:
     """Run global macro analysis mode."""
-    from core.analyzer import (
+    from core.formatter import (
         _format_links,
         _format_market_message,
         _format_news_prompt_line,
         _format_sources,
-        _get_ai_response_with_health,
+    )
+    from core.runtime import (
         _record_news_summary,
         _send_health_status,
         _send_tg_with_summary,
+    )
+    from core.analyzer import (
+        _get_ai_response_with_health,
     )
 
     news = get_news(180)

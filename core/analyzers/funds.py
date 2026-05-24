@@ -10,16 +10,20 @@ from core.data_fetcher import get_market_funds, get_news
 
 def run_funds(prompts: dict[str, str]) -> None:
     """Run funds flow analysis mode."""
-    from core.analyzer import (
+    from core.formatter import (
         _format_links,
         _format_market_message,
         _format_news_prompt_line,
         _format_sources,
-        _get_ai_response_with_health,
+    )
+    from core.runtime import (
         _record_fetch_success,
         _record_news_summary,
         _send_health_status,
         _send_tg_with_summary,
+    )
+    from core.analyzer import (
+        _get_ai_response_with_health,
     )
 
     now = datetime.now(settings.SHA_TZ)

@@ -11,17 +11,21 @@ from utils.notifier import log_info
 
 def run_after_market(prompts: dict[str, str]) -> None:
     """Run after-market review mode."""
-    from core.analyzer import (
+    from core.formatter import (
         _format_links,
         _format_market_message,
         _format_news_prompt_line,
         _format_sources,
         _format_weekday,
-        _get_ai_response_with_health,
+    )
+    from core.runtime import (
         _record_news_summary,
         _send_health_status,
         _send_tg_with_summary,
         _set_run_reason,
+    )
+    from core.analyzer import (
+        _get_ai_response_with_health,
     )
 
     mode = "after_market"
