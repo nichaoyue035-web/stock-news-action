@@ -13,8 +13,8 @@ from utils.notifier import log_error
 
 def run_review() -> None:
     """Run observation history review mode."""
-    from core.analyzer import (
-        _format_market_message,
+    from core.formatter import _format_market_message
+    from core.runtime import (
         _record_fetch_success,
         _send_health_status,
         _send_tg_with_summary,

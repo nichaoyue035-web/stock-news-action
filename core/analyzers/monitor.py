@@ -12,21 +12,25 @@ from core.data_fetcher import get_news
 
 def run_monitor(prompts: dict[str, str]) -> None:
     """Run real-time monitor analysis mode."""
-    from core.analyzer import (
-        HIGH_IMPACT_KEYWORDS,
+    from core.formatter import (
         _display_category,
         _display_importance,
         _format_market_message,
         _format_news_time,
-        _get_ai_response_with_health,
-        _has_effective_content,
         _infer_market_importance,
         _infer_news_category,
+        _title_icon,
+    )
+    from core.runtime import (
         _print_monitor_filter_summary,
         _record_news_summary,
         _send_health_status,
         _send_tg_with_summary,
-        _title_icon,
+    )
+    from core.analyzer import (
+        HIGH_IMPACT_KEYWORDS,
+        _get_ai_response_with_health,
+        _has_effective_content,
     )
 
     news = get_news(90)
