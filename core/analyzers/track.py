@@ -13,14 +13,16 @@ from utils.notifier import log_error
 
 def run_track() -> None:
     """Run tracked stock observation mode."""
-    from core.analyzer import (
-        _format_market_message,
-        _get_ai_response_with_health,
-        _has_effective_content,
+    from core.formatter import _format_market_message
+    from core.runtime import (
         _record_fetch_success,
-        _safe_pct_value,
         _send_health_status,
         _send_tg_with_summary,
+    )
+    from core.analyzer import (
+        _get_ai_response_with_health,
+        _has_effective_content,
+        _safe_pct_value,
         load_prompts,
     )
 

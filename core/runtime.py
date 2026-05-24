@@ -123,6 +123,9 @@ def _with_run_summary(mode_value: str | Callable[..., str]):
             _start_run_summary(str(mode))
             try:
                 return func(*args, **kwargs)
+            except Exception:
+                _set_run_summary(status="failed")
+                raise
             finally:
                 _print_run_summary()
 

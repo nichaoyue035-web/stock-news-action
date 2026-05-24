@@ -17,18 +17,22 @@ from utils.notifier import log_error, log_info
 
 def run_recommend() -> None:
     """Run AI-assisted observation candidate recommendation mode."""
-    from core.analyzer import (
-        _append_history,
-        _extract_pick_data,
+    from core.formatter import (
         _format_market_message,
         _format_news_prompt_line,
-        _get_ai_response_with_health,
-        _has_effective_content,
+    )
+    from core.runtime import (
         _record_fetch_success,
         _record_news_summary,
         _send_health_status,
         _send_tg_with_summary,
         _set_run_reason,
+    )
+    from core.history import _append_history
+    from core.analyzer import (
+        _extract_pick_data,
+        _get_ai_response_with_health,
+        _has_effective_content,
     )
 
     reset_data_source_health()
