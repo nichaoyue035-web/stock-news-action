@@ -8,6 +8,8 @@ from typing import Any, Optional
 from config import settings
 from core.data_fetcher import record_data_source_health, reset_data_source_health
 from core.formatter import (
+    _display_category,
+    _display_importance,
     _format_links,
     _format_market_message,
     _format_news_prompt_line,
@@ -17,14 +19,16 @@ from core.formatter import (
     _format_weekday,
     _infer_market_importance,
     _infer_news_category,
+    _title_icon,
 )
 from core.history import _append_history
 from core.runtime import (
     _print_monitor_filter_summary,
     _record_fetch_success,
     _record_news_summary,
-    _send_health_status,
+    _send_health_status as _runtime_send_health_status,
     _send_tg_with_summary,
+    _set_run_reason,
     _set_run_summary,
     _with_run_summary,
 )
@@ -89,6 +93,15 @@ def _has_effective_content(content: Any) -> bool:
     return bool(str(content or "").strip())
 
 
+
+
+def _send_health_status(reason: str, token: str | None = None, chat_id: str | None = None) -> None:
+    _runtime_send_health_status(
+        reason,
+        _format_source_health_line,
+        token=token,
+        chat_id=chat_id,
+    )
 @_with_run_summary("recommend")
 def run_recommend() -> None:
     from core.analyzers.recommend import run_recommend as _run_recommend
