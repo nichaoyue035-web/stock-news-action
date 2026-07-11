@@ -8,6 +8,40 @@ from typing import Any
 
 from config import settings
 from core.data_fetcher import get_news
+from utils.notifier import log_info
+
+
+SMALL_COMPANY_NEWS_CATEGORIES = {"company"}
+SMALL_COMPANY_NEWS_IMPORTANCE = {"low"}
+SMALL_COMPANY_NEWS_HIGH_IMPACT_KEYWORDS = (
+    "停牌",
+    "复牌",
+    "并购",
+    "重组",
+    "退市",
+    "立案",
+    "证监会",
+    "重大资产",
+    "控制权",
+    "暴雷",
+)
+
+
+def _is_low_value_company_news(item: dict[str, Any]) -> bool:
+    """Return True for ordinary single-company updates that should not be pushed."""
+    category = str(item.get("category") or "").strip().lower()
+    importance = str(item.get("importance") or "").strip().lower()
+    scope = str(item.get("market_scope") or "").strip()
+    text = f"{item.get('title', '')} {item.get('digest', '')}"
+
+    if any(keyword in text for keyword in SMALL_COMPANY_NEWS_HIGH_IMPACT_KEYWORDS):
+        return False
+
+    return (
+        category in SMALL_COMPANY_NEWS_CATEGORIES
+        and importance in SMALL_COMPANY_NEWS_IMPORTANCE
+        and scope in {"", "公司", "其他"}
+    )
 
 
 def run_monitor(prompts: dict[str, str]) -> None:
@@ -86,9 +120,32 @@ def run_monitor(prompts: dict[str, str]) -> None:
         )
         return
 
+    filtered_news = [item for item in fresh_news if not _is_low_value_company_news(item)]
+    filtered_company_items = len(fresh_news) - len(filtered_news)
+    if filtered_company_items:
+        log_info(f"监控过滤普通公司消息: skipped={filtered_company_items}")
+
+    if not filtered_news:
+        _print_monitor_filter_summary(
+            input_items=input_items,
+            after_time_filter=after_time_filter,
+            after_keyword_filter=0,
+            after_dedup=0,
+            final_alert_items=0,
+            decision="skip",
+            reason="only ordinary low-importance company news after filters",
+        )
+        _send_health_status(
+            "仅发现普通低重要性公司消息，已按偏好减少推送",
+            token=settings.TG_BOT_TOKEN_MONITOR,
+            chat_id=settings.TG_CHAT_ID_MONITOR,
+        )
+        return
+
+    after_keyword_filter = len(filtered_news)
     dedup_news: list[dict[str, Any]] = []
     seen_titles: set[str] = set()
-    for item in fresh_news:
+    for item in filtered_news:
         if item["title"] not in seen_titles:
             seen_titles.add(item["title"])
             dedup_news.append(item)

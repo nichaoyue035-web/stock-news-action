@@ -2,6 +2,7 @@ import pytest
 
 import main
 from core.formatter import _infer_news_category
+from core.analyzers.monitor import _is_low_value_company_news
 from utils.notifier import _split_message
 
 
@@ -29,3 +30,25 @@ def test_telegram_long_message_split():
 def test_news_category_infer():
     item = {"title": "国务院发布新政策支持科技创新", "digest": ""}
     assert _infer_news_category(item) == "政策"
+
+
+def test_monitor_filters_low_importance_company_news():
+    item = {
+        "title": "某小公司公告签订日常订单",
+        "digest": "单一公司经营进展",
+        "category": "company",
+        "importance": "low",
+        "market_scope": "公司",
+    }
+    assert _is_low_value_company_news(item) is True
+
+
+def test_monitor_keeps_high_impact_company_news():
+    item = {
+        "title": "某公司筹划重大资产重组并停牌",
+        "digest": "可能影响板块风险偏好",
+        "category": "company",
+        "importance": "low",
+        "market_scope": "公司",
+    }
+    assert _is_low_value_company_news(item) is False
