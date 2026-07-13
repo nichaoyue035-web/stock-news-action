@@ -2,7 +2,10 @@ import pytest
 
 import main
 from core.formatter import _infer_news_category
-from core.analyzers.monitor import _is_low_value_company_news
+from core.analyzers.monitor import (
+    _is_low_value_company_news,
+    _is_monitor_alert_importance,
+)
 from utils.notifier import _split_message
 
 
@@ -52,3 +55,10 @@ def test_monitor_keeps_high_impact_company_news():
         "market_scope": "公司",
     }
     assert _is_low_value_company_news(item) is False
+
+
+def test_monitor_only_allows_high_or_elevated_importance():
+    assert _is_monitor_alert_importance({"importance": "high"}) is True
+    assert _is_monitor_alert_importance({"importance": "偏高"}) is True
+    assert _is_monitor_alert_importance({"importance": "medium"}) is False
+    assert _is_monitor_alert_importance({"importance": "low"}) is False

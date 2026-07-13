@@ -13,6 +13,7 @@ from utils.notifier import log_info
 
 SMALL_COMPANY_NEWS_CATEGORIES = {"company"}
 SMALL_COMPANY_NEWS_IMPORTANCE = {"low"}
+MONITOR_ALLOWED_IMPORTANCE = {"high", "高", "偏高"}
 SMALL_COMPANY_NEWS_HIGH_IMPACT_KEYWORDS = (
     "停牌",
     "复牌",
@@ -25,6 +26,12 @@ SMALL_COMPANY_NEWS_HIGH_IMPACT_KEYWORDS = (
     "控制权",
     "暴雷",
 )
+
+
+def _is_monitor_alert_importance(item: dict[str, Any]) -> bool:
+    """Return True only for news importance levels the monitor should send."""
+    importance = str(item.get("importance") or "").strip().lower()
+    return importance in MONITOR_ALLOWED_IMPORTANCE
 
 
 def _is_low_value_company_news(item: dict[str, Any]) -> bool:
@@ -142,10 +149,34 @@ def run_monitor(prompts: dict[str, str]) -> None:
         )
         return
 
-    after_keyword_filter = len(filtered_news)
+    importance_filtered_news = [
+        item for item in filtered_news if _is_monitor_alert_importance(item)
+    ]
+    filtered_by_importance = len(filtered_news) - len(importance_filtered_news)
+    if filtered_by_importance:
+        log_info(f"监控过滤非高/偏高重要性消息: skipped={filtered_by_importance}")
+
+    if not importance_filtered_news:
+        _print_monitor_filter_summary(
+            input_items=input_items,
+            after_time_filter=after_time_filter,
+            after_keyword_filter=0,
+            after_dedup=0,
+            final_alert_items=0,
+            decision="skip",
+            reason="no high or elevated-importance news after filters",
+        )
+        _send_health_status(
+            "未发现重要性为高或偏高的消息，已按偏好过滤",
+            token=settings.TG_BOT_TOKEN_MONITOR,
+            chat_id=settings.TG_CHAT_ID_MONITOR,
+        )
+        return
+
+    after_keyword_filter = len(importance_filtered_news)
     dedup_news: list[dict[str, Any]] = []
     seen_titles: set[str] = set()
-    for item in filtered_news:
+    for item in importance_filtered_news:
         if item["title"] not in seen_titles:
             seen_titles.add(item["title"])
             dedup_news.append(item)
