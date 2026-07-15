@@ -105,3 +105,48 @@ def test_append_history_reports_write_failure(monkeypatch, tmp_path):
         _append_history({"name": "测试", "code": "000001", "reason": "测试"}, "1.23")
         is False
     )
+
+
+def test_extract_pick_data_reads_first_json_object():
+    from core.analyzer import _extract_pick_data
+
+    content = (
+        '说明文字 {"name":"测试","code":"000001","reason":"理由"} trailing {"x":1}'
+    )
+
+    assert _extract_pick_data(content) == {
+        "name": "测试",
+        "code": "000001",
+        "reason": "理由",
+    }
+
+
+def test_send_health_status_attempts_telegram(monkeypatch):
+    import core.runtime as runtime
+
+    sent_messages = []
+
+    def fake_send_tg(content, **kwargs):
+        sent_messages.append((content, kwargs))
+        return True
+
+    monkeypatch.setattr(runtime, "CURRENT_RUN_SUMMARY", None)
+    monkeypatch.setattr(runtime, "send_tg", fake_send_tg)
+    runtime._start_run_summary("daily")
+
+    runtime._send_health_status("新闻数据为空")
+
+    summary = runtime._get_run_summary()
+    assert sent_messages
+    assert summary["telegram_attempted"] is True
+    assert summary["telegram_sent"] is True
+    assert summary["status"] == "failed"
+
+
+def test_redact_sensitive_text_redacts_configured_secrets(monkeypatch):
+    from config import settings
+    from utils.safety import redact_sensitive_text
+
+    monkeypatch.setattr(settings, "DEEPSEEK_API_KEY", "secret-key")
+
+    assert redact_sensitive_text("failed with secret-key") == "failed with <redacted>"

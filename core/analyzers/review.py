@@ -73,12 +73,21 @@ def run_review() -> None:
                 + ("；..." if skipped_count > 3 else "")
                 + "）"
             )
+        caution_lines = []
+        if total_count < 3:
+            caution_lines.append("样本较少，统计结果仅作粗略参考。")
+        if skipped_count > total_count:
+            caution_lines.append("行情缺失较多，本次复盘可信度较低。")
+        caution_text = ""
+        if caution_lines:
+            caution_text = "\n提示: " + " ".join(caution_lines)
         summary = (
             f"最近记录: {total_rows} 条，成功计算: {total_count} 条，跳过: {skipped_count} 条\n"
             f"观察样本正收益占比: {win_rate:.0f}%\n"
             f"观察样本平均变化: {avg_profit:+.2f}%\n"
             + "\n".join(details)
             + skipped_text
+            + caution_text
         )
         _send_tg_with_summary(
             _format_market_message(

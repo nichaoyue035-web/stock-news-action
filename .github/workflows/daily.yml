@@ -66,5 +66,6 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "Update Daily Stock Pick & History [skip ci]"
-            git push
+            git pull --rebase
+            git push || (git pull --rebase && git push)
           fi

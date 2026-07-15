@@ -195,7 +195,6 @@ def _send_health_status(
         from core.formatter import _format_source_health_line
 
         formatter = _format_source_health_line
-    _ = (token, chat_id)
     failure_markers = (
         "数据为空",
         "未找到",
@@ -209,4 +208,17 @@ def _send_health_status(
         "failed" if any(marker in reason for marker in failure_markers) else "partial"
     )
     _set_run_reason(reason, status=status)
-    log_info(_format_health_status_message(reason, formatter))
+    message = _format_health_status_message(reason, formatter)
+    log_info(message)
+    _set_run_summary(telegram_attempted=True)
+    try:
+        sent = send_tg(message, token=token, chat_id=chat_id)
+    except Exception as exc:
+        _set_run_summary(telegram_sent=False, status="failed")
+        _set_run_reason(f"health telegram send failed: {exc.__class__.__name__}")
+        raise
+    if not sent:
+        _set_run_summary(telegram_sent=False, status="failed")
+        _set_run_reason("health telegram send failed")
+        return
+    _set_run_summary(telegram_sent=True)

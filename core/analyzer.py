@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from typing import Any, Optional
 
 from config import settings
@@ -47,12 +46,13 @@ def load_prompts() -> dict[str, str]:
 
 
 def _extract_pick_data(content: str) -> Optional[dict[str, Any]]:
-    json_match = re.search(r"\{.*\}", content, re.DOTALL)
-    if not json_match:
+    text = str(content or "").strip()
+    start_idx = text.find("{")
+    if start_idx == -1:
         log_error("❌ AI 返回内容中未找到 JSON")
         return None
     try:
-        parsed = json.loads(json_match.group())
+        parsed, _ = json.JSONDecoder().raw_decode(text[start_idx:])
     except json.JSONDecodeError as exc:
         log_error(f"❌ AI 返回 JSON 解析失败: {exc}")
         return None

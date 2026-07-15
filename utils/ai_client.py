@@ -1,23 +1,25 @@
 from __future__ import annotations
 
 import time
-from typing import Any
 
-from openai import OpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 
 from config import settings
 from utils.notifier import log_error
+from utils.safety import redact_sensitive_text
 
 AI_TIMEOUT_SECONDS = 30
 AI_MAX_RETRIES = 2
 
 
-def _redact_sensitive_text(text: Any) -> str:
-    safe_text = str(text or "").replace("\n", " ").strip()
-    for secret in (settings.DEEPSEEK_API_KEY,):
-        if secret:
-            safe_text = safe_text.replace(str(secret), "<redacted>")
-    return safe_text[:160] or "未知原因"
+def _should_retry_ai_error(exc: Exception) -> bool:
+    """Retry only transient network, timeout, rate-limit, and server errors."""
+    if isinstance(exc, (APIConnectionError, APITimeoutError)):
+        return True
+    if isinstance(exc, APIStatusError):
+        status_code = int(getattr(exc, "status_code", 0) or 0)
+        return status_code == 429 or status_code >= 500
+    return False
 
 
 def get_ai_response(
@@ -52,7 +54,6 @@ def get_ai_response(
     )
 
     # 4. 发起请求并处理异常
-    last_error = ""
     for attempt in range(1, AI_MAX_RETRIES + 2):
         try:
             resp = client.chat.completions.create(
@@ -63,18 +64,17 @@ def get_ai_response(
             content = resp.choices[0].message.content
             if str(content or "").strip():
                 return content
-            last_error = "返回空内容"
-            log_error(f"❌ DeepSeek API 调用失败: {last_error}")
+            log_error("❌ DeepSeek API 调用失败: 返回空内容")
             return None
         except Exception as exc:
-            last_error = _redact_sensitive_text(exc)
-            if attempt <= AI_MAX_RETRIES:
+            safe_error = redact_sensitive_text(exc)
+            if attempt <= AI_MAX_RETRIES and _should_retry_ai_error(exc):
                 log_error(
-                    f"⚠️ DeepSeek API 调用失败，准备重试 ({attempt}/{AI_MAX_RETRIES}): {last_error}"
+                    f"⚠️ DeepSeek API 临时错误，准备重试 ({attempt}/{AI_MAX_RETRIES}): {safe_error}"
                 )
                 time.sleep(min(attempt * 2, 5))
                 continue
-            log_error(f"❌ DeepSeek API 调用失败: {last_error}")
+            log_error(f"❌ DeepSeek API 调用失败: {safe_error}")
             return None
 
     return None
