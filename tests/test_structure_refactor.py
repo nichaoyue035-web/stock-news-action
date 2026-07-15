@@ -62,3 +62,46 @@ def test_monitor_only_allows_high_or_elevated_importance():
     assert _is_monitor_alert_importance({"importance": "偏高"}) is True
     assert _is_monitor_alert_importance({"importance": "medium"}) is False
     assert _is_monitor_alert_importance({"importance": "low"}) is False
+
+
+def test_validate_pick_rejects_candidate_not_in_list():
+    from core.analyzer import _validate_pick_in_candidates
+
+    pick = {"name": "不存在", "code": "999999", "reason": "测试"}
+    candidates = [{"name": "测试股份", "code": "600000"}]
+
+    assert _validate_pick_in_candidates(pick, candidates) is None
+
+
+def test_validate_pick_normalizes_candidate_name_and_code():
+    from core.analyzer import _validate_pick_in_candidates
+
+    pick = {"name": "模型乱写名", "code": "1", "reason": "测试"}
+    candidates = [{"name": "真实候选", "code": "000001"}]
+
+    validated = _validate_pick_in_candidates(pick, candidates)
+
+    assert validated == {"name": "真实候选", "code": "000001", "reason": "测试"}
+
+
+def test_send_tg_returns_false_when_missing_credentials(monkeypatch):
+    from config import settings
+    from utils.notifier import send_tg
+
+    monkeypatch.setattr(settings, "TG_BOT_TOKEN", None)
+    monkeypatch.setattr(settings, "TG_CHAT_ID", None)
+
+    assert send_tg("hello", token="", chat_id="") is False
+
+
+def test_append_history_reports_write_failure(monkeypatch, tmp_path):
+    from config import settings
+    from core.history import _append_history
+
+    blocked_dir = tmp_path / "missing" / "history.csv"
+    monkeypatch.setattr(settings, "HISTORY_FILE", str(blocked_dir))
+
+    assert (
+        _append_history({"name": "测试", "code": "000001", "reason": "测试"}, "1.23")
+        is False
+    )

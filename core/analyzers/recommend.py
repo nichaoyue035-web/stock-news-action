@@ -32,6 +32,7 @@ def run_recommend() -> None:
     from core.analyzer import (
         _extract_pick_data,
         _get_ai_response_with_health,
+        _validate_pick_in_candidates,
         _has_effective_content,
     )
 
@@ -70,6 +71,11 @@ def run_recommend() -> None:
         _send_health_status("DeepSeek 返回内容无法解析为观察记录")
         return
 
+    pick_data = _validate_pick_in_candidates(pick_data, candidates)
+    if not pick_data:
+        _send_health_status("DeepSeek 返回了候选列表外的股票，已拒绝生成观察记录")
+        return
+
     quote = get_stock_quote(pick_data["code"])
     _record_fetch_success(bool(quote))
     if not quote:
@@ -84,7 +90,9 @@ def run_recommend() -> None:
         _set_run_reason("选股结果写入失败", status="failed")
         return
 
-    _append_history(pick_data, quote["price"])
+    history_saved = _append_history(pick_data, quote["price"])
+    if not history_saved:
+        _set_run_reason("历史记录写入失败", status="partial")
     now = datetime.now(settings.SHA_TZ)
     message = _format_market_message(
         "市场观察记录",
@@ -93,7 +101,14 @@ def run_recommend() -> None:
         category="观察记录",
         importance="低（观察记录）",
         summary=f"{pick_data['name']} ({pick_data['code']}) 被记录为观察标的，当前价 {quote['price']}。",
-        impact=f"观察理由：{pick_data['reason']}",
+        impact=(
+            f"观察理由：{pick_data['reason']}"
+            + (
+                "\n注意：观察记录已生成，但 history.csv 写入失败。"
+                if not history_saved
+                else ""
+            )
+        ),
         links="未知",
     )
     if _has_effective_content(message):

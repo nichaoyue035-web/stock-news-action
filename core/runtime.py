@@ -137,17 +137,30 @@ def _with_run_summary(mode_value: str | Callable[..., str]):
 def _send_tg_with_summary(content: Any, **kwargs: Any) -> None:
     _set_run_summary(telegram_attempted=True)
     try:
-        send_tg(content, **kwargs)
+        sent = send_tg(content, **kwargs)
     except Exception as exc:
         _set_run_summary(telegram_sent=False, status="failed")
         _set_run_reason(f"telegram send failed: {exc.__class__.__name__}")
         raise
+    if not sent:
+        _set_run_summary(telegram_sent=False, status="failed")
+        _set_run_reason("telegram send failed")
+        return
     summary = _get_run_summary() or {}
     status = "partial" if summary.get("status") == "partial" else "success"
     _set_run_summary(telegram_sent=True, status=status)
 
 
-def _print_monitor_filter_summary(*, input_items: int, after_time_filter: int, after_keyword_filter: int, after_dedup: int, final_alert_items: int, decision: str, reason: str = "") -> None:
+def _print_monitor_filter_summary(
+    *,
+    input_items: int,
+    after_time_filter: int,
+    after_keyword_filter: int,
+    after_dedup: int,
+    final_alert_items: int,
+    decision: str,
+    reason: str = "",
+) -> None:
     print("[FILTER]", flush=True)
     print("mode=monitor", flush=True)
     print(f"input_items={input_items}", flush=True)
@@ -183,7 +196,17 @@ def _send_health_status(
 
         formatter = _format_source_health_line
     _ = (token, chat_id)
-    failure_markers = ("数据为空", "未找到", "无法", "读取失败", "发生异常", "失败", "正文为空")
-    status = "failed" if any(marker in reason for marker in failure_markers) else "partial"
+    failure_markers = (
+        "数据为空",
+        "未找到",
+        "无法",
+        "读取失败",
+        "发生异常",
+        "失败",
+        "正文为空",
+    )
+    status = (
+        "failed" if any(marker in reason for marker in failure_markers) else "partial"
+    )
     _set_run_reason(reason, status=status)
     log_info(_format_health_status_message(reason, formatter))
