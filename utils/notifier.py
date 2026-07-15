@@ -95,7 +95,7 @@ def _split_message(
         remaining = remaining[split_at:].lstrip()
 
 
-def send_tg(content, token=None, chat_id=None):
+def send_tg(content, token=None, chat_id=None) -> bool:
     use_token = token if token else settings.TG_BOT_TOKEN
     use_chat_id = chat_id if chat_id else settings.TG_CHAT_ID
 
@@ -103,7 +103,7 @@ def send_tg(content, token=None, chat_id=None):
         message = "⚠️ TG_BOT_TOKEN 或 TG_CHAT_ID 未配置，跳过 Telegram 推送"
         logger.warning(message)
         _raise_in_ci(message)
-        return
+        return False
 
     url = f"https://api.telegram.org/bot{use_token}/sendMessage"
     safe_content = _prepare_content(content)
@@ -121,16 +121,17 @@ def send_tg(content, token=None, chat_id=None):
             message = f"❌ Telegram 请求异常: {exc.__class__.__name__}"
             logger.error(message)
             _raise_in_ci(message)
-            return
+            return False
 
         if resp.status_code != 200:
             response_preview = resp.text[:300].replace(use_token, "<redacted>")
             message = f"❌ Telegram 推送失败: {resp.status_code} - {response_preview}"
             logger.error(message)
             _raise_in_ci(f"Telegram 推送失败: {resp.status_code}")
-            return
+            return False
 
         if len(chunks) > 1:
             logger.info("✅ Telegram 分段推送成功 (%s/%s)", index, len(chunks))
         else:
             logger.info("✅ Telegram 推送成功")
+    return True

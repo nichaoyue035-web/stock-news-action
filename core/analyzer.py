@@ -15,7 +15,21 @@ from utils.ai_client import get_ai_response
 from utils.notifier import log_error, log_info
 
 HIGH_IMPACT_KEYWORDS: tuple[str, ...] = (
-    "涨停", "跌停", "停牌", "复牌", "业绩", "并购", "重组", "回购", "增持", "减持", "政策", "降息", "AI", "算力", "芯片",
+    "涨停",
+    "跌停",
+    "停牌",
+    "复牌",
+    "业绩",
+    "并购",
+    "重组",
+    "回购",
+    "增持",
+    "减持",
+    "政策",
+    "降息",
+    "AI",
+    "算力",
+    "芯片",
 )
 
 
@@ -49,6 +63,34 @@ def _extract_pick_data(content: str) -> Optional[dict[str, Any]]:
     return parsed
 
 
+def _normalize_stock_code(raw_code: Any) -> str:
+    code = str(raw_code or "").strip()
+    if not code.isdigit() or len(code) > 6:
+        return ""
+    return code.zfill(6)
+
+
+def _validate_pick_in_candidates(
+    pick_data: dict[str, Any], candidates: list[dict[str, Any]]
+) -> Optional[dict[str, Any]]:
+    """Return normalized pick data only when the AI chose a provided candidate."""
+    pick_code = _normalize_stock_code(pick_data.get("code"))
+    candidates_by_code = {
+        _normalize_stock_code(candidate.get("code")): candidate
+        for candidate in candidates
+        if _normalize_stock_code(candidate.get("code"))
+    }
+    candidate = candidates_by_code.get(pick_code)
+    if not candidate:
+        log_error(f"❌ AI 返回候选列表外股票代码: {pick_code or '空'}")
+        return None
+
+    normalized = dict(pick_data)
+    normalized["code"] = pick_code
+    normalized["name"] = str(candidate.get("name") or pick_data.get("name") or "未知")
+    return normalized
+
+
 def _safe_pct_value(raw_pct: Any) -> tuple[Optional[float], str]:
     text = str(raw_pct).replace("%", "").strip()
     try:
@@ -70,6 +112,8 @@ def _get_ai_response_with_health(*args, **kwargs) -> Optional[str]:
 
 def _has_effective_content(content: Any) -> bool:
     return bool(str(content or "").strip())
+
+
 @_with_run_summary("recommend")
 def run_recommend() -> None:
     from core.analyzers.recommend import run_recommend as _run_recommend
