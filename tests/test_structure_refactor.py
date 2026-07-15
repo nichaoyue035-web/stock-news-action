@@ -62,3 +62,91 @@ def test_monitor_only_allows_high_or_elevated_importance():
     assert _is_monitor_alert_importance({"importance": "偏高"}) is True
     assert _is_monitor_alert_importance({"importance": "medium"}) is False
     assert _is_monitor_alert_importance({"importance": "low"}) is False
+
+
+def test_validate_pick_rejects_candidate_not_in_list():
+    from core.analyzer import _validate_pick_in_candidates
+
+    pick = {"name": "不存在", "code": "999999", "reason": "测试"}
+    candidates = [{"name": "测试股份", "code": "600000"}]
+
+    assert _validate_pick_in_candidates(pick, candidates) is None
+
+
+def test_validate_pick_normalizes_candidate_name_and_code():
+    from core.analyzer import _validate_pick_in_candidates
+
+    pick = {"name": "模型乱写名", "code": "1", "reason": "测试"}
+    candidates = [{"name": "真实候选", "code": "000001"}]
+
+    validated = _validate_pick_in_candidates(pick, candidates)
+
+    assert validated == {"name": "真实候选", "code": "000001", "reason": "测试"}
+
+
+def test_send_tg_returns_false_when_missing_credentials(monkeypatch):
+    from config import settings
+    from utils.notifier import send_tg
+
+    monkeypatch.setattr(settings, "TG_BOT_TOKEN", None)
+    monkeypatch.setattr(settings, "TG_CHAT_ID", None)
+
+    assert send_tg("hello", token="", chat_id="") is False
+
+
+def test_append_history_reports_write_failure(monkeypatch, tmp_path):
+    from config import settings
+    from core.history import _append_history
+
+    blocked_dir = tmp_path / "missing" / "history.csv"
+    monkeypatch.setattr(settings, "HISTORY_FILE", str(blocked_dir))
+
+    assert (
+        _append_history({"name": "测试", "code": "000001", "reason": "测试"}, "1.23")
+        is False
+    )
+
+
+def test_extract_pick_data_reads_first_json_object():
+    from core.analyzer import _extract_pick_data
+
+    content = (
+        '说明文字 {"name":"测试","code":"000001","reason":"理由"} trailing {"x":1}'
+    )
+
+    assert _extract_pick_data(content) == {
+        "name": "测试",
+        "code": "000001",
+        "reason": "理由",
+    }
+
+
+def test_send_health_status_attempts_telegram(monkeypatch):
+    import core.runtime as runtime
+
+    sent_messages = []
+
+    def fake_send_tg(content, **kwargs):
+        sent_messages.append((content, kwargs))
+        return True
+
+    monkeypatch.setattr(runtime, "CURRENT_RUN_SUMMARY", None)
+    monkeypatch.setattr(runtime, "send_tg", fake_send_tg)
+    runtime._start_run_summary("daily")
+
+    runtime._send_health_status("新闻数据为空")
+
+    summary = runtime._get_run_summary()
+    assert sent_messages
+    assert summary["telegram_attempted"] is True
+    assert summary["telegram_sent"] is True
+    assert summary["status"] == "failed"
+
+
+def test_redact_sensitive_text_redacts_configured_secrets(monkeypatch):
+    from config import settings
+    from utils.safety import redact_sensitive_text
+
+    monkeypatch.setattr(settings, "DEEPSEEK_API_KEY", "secret-key")
+
+    assert redact_sensitive_text("failed with secret-key") == "failed with <redacted>"

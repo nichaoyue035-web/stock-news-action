@@ -16,6 +16,7 @@ import requests
 from config import settings
 from utils.ai_client import get_ai_response
 from utils.notifier import log_error, log_info
+from utils.safety import redact_sensitive_text
 
 CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "policy": (
@@ -207,17 +208,7 @@ DATA_SOURCE_HEALTH: dict[str, dict[str, Any]] = {}
 
 def _redact_sensitive_text(text: Any) -> str:
     """Return a short error detail without leaking configured secrets."""
-    safe_text = str(text or "").replace("\n", " ").strip()
-    for secret in (
-        settings.DEEPSEEK_API_KEY,
-        settings.TG_BOT_TOKEN,
-        settings.TG_CHAT_ID,
-        settings.TG_BOT_TOKEN_MONITOR,
-        settings.TG_CHAT_ID_MONITOR,
-    ):
-        if secret:
-            safe_text = safe_text.replace(str(secret), "<redacted>")
-    return safe_text[:120] or "未知原因"
+    return redact_sensitive_text(text, max_length=120)
 
 
 def reset_data_source_health() -> None:
@@ -599,12 +590,13 @@ def enrich_news_items(news_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _extract_json_object(raw_text: str) -> Optional[dict[str, Any]]:
-    """从模型返回文本中提取 JSON 对象。"""
-    match = re.search(r"\{[\s\S]*\}", str(raw_text or ""))
-    if not match:
+    """从模型返回文本中提取第一个 JSON 对象。"""
+    text = str(raw_text or "").strip()
+    start_idx = text.find("{")
+    if start_idx == -1:
         return None
     try:
-        parsed = json.loads(match.group(0))
+        parsed, _ = json.JSONDecoder().raw_decode(text[start_idx:])
         return parsed if isinstance(parsed, dict) else None
     except json.JSONDecodeError:
         return None
@@ -615,6 +607,7 @@ def _normalize_external_news(
 ) -> list[dict[str, Any]]:
     """使用 DeepSeek 批量判断语言并翻译非中文新闻。"""
     if not news_items:
+        record_data_source_health("DeepSeek 翻译", "skipped", "无外部新闻", 0)
         return []
 
     batch = news_items[:max_translate_items]
@@ -637,6 +630,12 @@ def _normalize_external_news(
 
     ai_text = get_ai_response(prompt, temperature=0.0)
     parsed = _extract_json_object(ai_text or "")
+    if not parsed or not isinstance(parsed.get("items"), list):
+        record_data_source_health("DeepSeek 翻译", "failed", "返回格式异常", 0)
+    else:
+        record_data_source_health(
+            "DeepSeek 翻译", "success", "", len(parsed.get("items", []))
+        )
     mapped: dict[int, dict[str, Any]] = {}
     if parsed and isinstance(parsed.get("items"), list):
         for row in parsed["items"]:
@@ -694,6 +693,9 @@ def _deduplicate_semantic_news(
 ) -> list[dict[str, Any]]:
     """让 DeepSeek 通读新闻列表，删除含义相同的国内外新闻。"""
     if len(news_items) <= 1:
+        record_data_source_health(
+            "DeepSeek 去重", "skipped", "新闻数量不足", len(news_items)
+        )
         return news_items
 
     prompt_rows = []
@@ -712,7 +714,7 @@ def _deduplicate_semantic_news(
         "请通读以下市场新闻列表，不区分海外新闻或国内新闻，删除含义相同、事实主体相同、"
         "只是来源/措辞/翻译不同的重复新闻。保留时间更新、信息量更完整或影响更直接的一条。"
         "不要删除只是同一主题但事实进展不同的新闻。\n"
-        "仅返回 JSON，格式：{\"keep\":[0,2,5]}，keep 为需要保留的 idx，按原列表顺序排列。\n\n"
+        '仅返回 JSON，格式：{"keep":[0,2,5]}，keep 为需要保留的 idx，按原列表顺序排列。\n\n'
         f"待去重列表：{json.dumps(prompt_rows, ensure_ascii=False)}"
     )
 
@@ -720,6 +722,7 @@ def _deduplicate_semantic_news(
     parsed = _extract_json_object(ai_text or "")
     raw_keep = parsed.get("keep") if parsed else None
     if not isinstance(raw_keep, list):
+        record_data_source_health("DeepSeek 去重", "failed", "返回格式异常", 0)
         log_error("⚠️ DeepSeek 语义去重返回格式异常，使用标题去重结果")
         return news_items
 
@@ -735,10 +738,12 @@ def _deduplicate_semantic_news(
             keep_indexes.append(idx)
 
     if not keep_indexes:
+        record_data_source_health("DeepSeek 去重", "failed", "未返回有效索引", 0)
         log_error("⚠️ DeepSeek 语义去重未返回有效索引，使用标题去重结果")
         return news_items
 
     keep_indexes.sort()
+    record_data_source_health("DeepSeek 去重", "success", "", len(keep_indexes))
     if len(keep_indexes) < len(news_items):
         log_info(f"DeepSeek 语义去重：{len(news_items)} -> {len(keep_indexes)}")
     return [news_items[idx] for idx in keep_indexes]
