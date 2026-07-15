@@ -9,7 +9,7 @@ from config import settings
 from utils.notifier import log_error
 
 
-def _append_history(pick_data: dict[str, Any], start_price: str) -> None:
+def _append_history(pick_data: dict[str, Any], start_price: str) -> bool:
     try:
         today_str = datetime.now(settings.SHA_TZ).strftime("%Y-%m-%d")
         file_exists = os.path.isfile(settings.HISTORY_FILE)
@@ -17,12 +17,16 @@ def _append_history(pick_data: dict[str, Any], start_price: str) -> None:
             writer = csv.writer(file)
             if not file_exists:
                 writer.writerow(["Date", "Name", "Code", "Start_Price", "Reason"])
-            writer.writerow([
-                today_str,
-                pick_data["name"],
-                pick_data["code"],
-                start_price,
-                str(pick_data["reason"]).replace("\n", " "),
-            ])
+            writer.writerow(
+                [
+                    today_str,
+                    pick_data["name"],
+                    pick_data["code"],
+                    start_price,
+                    str(pick_data["reason"]).replace("\n", " "),
+                ]
+            )
+        return True
     except Exception as exc:
         log_error(f"❌ 历史写入失败: {exc}")
+        return False

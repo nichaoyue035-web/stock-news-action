@@ -31,6 +31,8 @@ def run_review() -> None:
 
         recent_rows = rows[-10:] if len(rows) > 10 else rows
         details: list[str] = []
+        skipped_reasons: list[str] = []
+        total_rows = len(recent_rows)
         total_count = 0
         win_count = 0
         total_profit = 0.0
@@ -38,12 +40,14 @@ def run_review() -> None:
         for row in recent_rows:
             curr_quote = get_stock_quote(row["Code"])
             if not curr_quote:
+                skipped_reasons.append(f"{row.get('Name', '未知')}：行情为空")
                 continue
             try:
                 start = float(row["Start_Price"])
                 curr = float(curr_quote["price"])
                 pct = (curr - start) / start * 100
             except (ValueError, TypeError, ZeroDivisionError):
+                skipped_reasons.append(f"{row.get('Name', '未知')}：价格无法计算")
                 continue
 
             total_count += 1
@@ -60,9 +64,30 @@ def run_review() -> None:
         win_rate = (win_count / total_count) * 100
         avg_profit = total_profit / total_count
         now = datetime.now(settings.SHA_TZ)
+        skipped_count = len(skipped_reasons)
+        skipped_text = ""
+        if skipped_count:
+            skipped_text = (
+                f"\n跳过样本: {skipped_count} 条（"
+                + "；".join(skipped_reasons[:3])
+                + ("；..." if skipped_count > 3 else "")
+                + "）"
+            )
+        caution_lines = []
+        if total_count < 3:
+            caution_lines.append("样本较少，统计结果仅作粗略参考。")
+        if skipped_count > total_count:
+            caution_lines.append("行情缺失较多，本次复盘可信度较低。")
+        caution_text = ""
+        if caution_lines:
+            caution_text = "\n提示: " + " ".join(caution_lines)
         summary = (
+            f"最近记录: {total_rows} 条，成功计算: {total_count} 条，跳过: {skipped_count} 条\n"
             f"观察样本正收益占比: {win_rate:.0f}%\n"
-            f"观察样本平均变化: {avg_profit:+.2f}%\n" + "\n".join(details)
+            f"观察样本平均变化: {avg_profit:+.2f}%\n"
+            + "\n".join(details)
+            + skipped_text
+            + caution_text
         )
         _send_tg_with_summary(
             _format_market_message(

@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write  # ⚠️ 必须开启写入权限，否则无法保存选股结果
 
+concurrency:
+  group: daily-memory-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -19,6 +23,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip'
           
       - name: Install Dependencies
         run: pip install -r requirements.txt
@@ -61,5 +66,13 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "Update Daily Stock Pick & History [skip ci]"
-            git push
+            git pull --rebase
+            git push || (git pull --rebase && git push)
           fi
+      - name: Upload Run Summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-summary
+          path: run_summary.txt
+          if-no-files-found: ignore

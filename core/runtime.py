@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from functools import wraps
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from core.data_fetcher import get_data_source_health
 from utils.notifier import log_info, send_tg
 
 CURRENT_RUN_SUMMARY: dict[str, Any] | None = None
+RUN_SUMMARY_FILE = "run_summary.txt"
 
 
 def _start_run_summary(mode: str) -> None:
@@ -87,13 +88,8 @@ def _derive_run_status(summary: dict[str, Any]) -> str:
     return "success"
 
 
-def _print_run_summary() -> None:
-    summary = _get_run_summary()
-    if summary is None:
-        return
-
-    summary["status"] = _derive_run_status(summary)
-    print("[RUN SUMMARY]")
+def _render_run_summary(summary: dict[str, Any]) -> list[str]:
+    lines = ["[RUN SUMMARY]"]
     for key in (
         "mode",
         "data_fetch_success",
@@ -112,7 +108,28 @@ def _print_run_summary() -> None:
             value = "null"
         elif isinstance(value, bool):
             value = str(value).lower()
-        print(f"{key}={value}")
+        lines.append(f"{key}={value}")
+    return lines
+
+
+def _write_run_summary_file(lines: list[str]) -> None:
+    try:
+        with open(RUN_SUMMARY_FILE, "w", encoding="utf-8") as file:
+            file.write("\n".join(lines) + "\n")
+    except Exception as exc:
+        log_info(f"⚠️ 运行摘要文件写入失败: {exc.__class__.__name__}")
+
+
+def _print_run_summary() -> None:
+    summary = _get_run_summary()
+    if summary is None:
+        return
+
+    summary["status"] = _derive_run_status(summary)
+    lines = _render_run_summary(summary)
+    for line in lines:
+        print(line)
+    _write_run_summary_file(lines)
 
 
 def _with_run_summary(mode_value: str | Callable[..., str]):
@@ -137,17 +154,30 @@ def _with_run_summary(mode_value: str | Callable[..., str]):
 def _send_tg_with_summary(content: Any, **kwargs: Any) -> None:
     _set_run_summary(telegram_attempted=True)
     try:
-        send_tg(content, **kwargs)
+        sent = send_tg(content, **kwargs)
     except Exception as exc:
         _set_run_summary(telegram_sent=False, status="failed")
         _set_run_reason(f"telegram send failed: {exc.__class__.__name__}")
         raise
+    if not sent:
+        _set_run_summary(telegram_sent=False, status="failed")
+        _set_run_reason("telegram send failed")
+        return
     summary = _get_run_summary() or {}
     status = "partial" if summary.get("status") == "partial" else "success"
     _set_run_summary(telegram_sent=True, status=status)
 
 
-def _print_monitor_filter_summary(*, input_items: int, after_time_filter: int, after_keyword_filter: int, after_dedup: int, final_alert_items: int, decision: str, reason: str = "") -> None:
+def _print_monitor_filter_summary(
+    *,
+    input_items: int,
+    after_time_filter: int,
+    after_keyword_filter: int,
+    after_dedup: int,
+    final_alert_items: int,
+    decision: str,
+    reason: str = "",
+) -> None:
     print("[FILTER]", flush=True)
     print("mode=monitor", flush=True)
     print(f"input_items={input_items}", flush=True)
@@ -177,13 +207,39 @@ def _send_health_status(
     formatter=None,
     token: str | None = None,
     chat_id: str | None = None,
+    notify: bool = True,
+    severity: Literal["info", "partial", "failed"] | None = None,
 ) -> None:
     if formatter is None:
         from core.formatter import _format_source_health_line
 
         formatter = _format_source_health_line
-    _ = (token, chat_id)
-    failure_markers = ("数据为空", "未找到", "无法", "读取失败", "发生异常", "失败", "正文为空")
-    status = "failed" if any(marker in reason for marker in failure_markers) else "partial"
+    failure_markers = (
+        "数据为空",
+        "未找到",
+        "无法",
+        "读取失败",
+        "发生异常",
+        "失败",
+        "正文为空",
+    )
+    status = severity or (
+        "failed" if any(marker in reason for marker in failure_markers) else "partial"
+    )
     _set_run_reason(reason, status=status)
-    log_info(_format_health_status_message(reason, formatter))
+    message = _format_health_status_message(reason, formatter)
+    log_info(message)
+    if not notify:
+        return
+    _set_run_summary(telegram_attempted=True)
+    try:
+        sent = send_tg(message, token=token, chat_id=chat_id)
+    except Exception as exc:
+        _set_run_summary(telegram_sent=False, status="failed")
+        _set_run_reason(f"health telegram send failed: {exc.__class__.__name__}")
+        raise
+    if not sent:
+        _set_run_summary(telegram_sent=False, status="failed")
+        _set_run_reason("health telegram send failed")
+        return
+    _set_run_summary(telegram_sent=True)

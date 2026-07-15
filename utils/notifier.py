@@ -95,24 +95,25 @@ def _split_message(
         remaining = remaining[split_at:].lstrip()
 
 
-def send_tg(content, token=None, chat_id=None):
-    use_token = token if token else settings.TG_BOT_TOKEN
-    use_chat_id = chat_id if chat_id else settings.TG_CHAT_ID
+def send_tg(content, token=None, chat_id=None) -> bool:
+    use_token = settings.TG_BOT_TOKEN if token is None else token
+    use_chat_id = settings.TG_CHAT_ID if chat_id is None else chat_id
 
     if not use_token or not use_chat_id:
         message = "⚠️ TG_BOT_TOKEN 或 TG_CHAT_ID 未配置，跳过 Telegram 推送"
         logger.warning(message)
         _raise_in_ci(message)
-        return
+        return False
 
     url = f"https://api.telegram.org/bot{use_token}/sendMessage"
     safe_content = _prepare_content(content)
     chunks = list(_split_message(safe_content))
 
     for index, chunk in enumerate(chunks, start=1):
+        chunk_text = f"[{index}/{len(chunks)}]\n{chunk}" if len(chunks) > 1 else chunk
         payload = {
             "chat_id": use_chat_id,
-            "text": chunk,
+            "text": chunk_text,
             "disable_web_page_preview": True,
         }
         try:
@@ -121,16 +122,17 @@ def send_tg(content, token=None, chat_id=None):
             message = f"❌ Telegram 请求异常: {exc.__class__.__name__}"
             logger.error(message)
             _raise_in_ci(message)
-            return
+            return False
 
         if resp.status_code != 200:
             response_preview = resp.text[:300].replace(use_token, "<redacted>")
             message = f"❌ Telegram 推送失败: {resp.status_code} - {response_preview}"
             logger.error(message)
             _raise_in_ci(f"Telegram 推送失败: {resp.status_code}")
-            return
+            return False
 
         if len(chunks) > 1:
             logger.info("✅ Telegram 分段推送成功 (%s/%s)", index, len(chunks))
         else:
             logger.info("✅ Telegram 推送成功")
+    return True

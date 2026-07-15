@@ -72,4 +72,6 @@ def run_global(prompts: dict[str, str]) -> None:
             "DeepSeek 没有生成有效摘要或判断无重大事件",
             token=settings.TG_BOT_TOKEN_MONITOR,
             chat_id=settings.TG_CHAT_ID_MONITOR,
+            notify=False,
+            severity="info",
         )

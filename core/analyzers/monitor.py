@@ -124,6 +124,8 @@ def run_monitor(prompts: dict[str, str]) -> None:
             "未发现符合时间窗口的重要市场信息",
             token=settings.TG_BOT_TOKEN_MONITOR,
             chat_id=settings.TG_CHAT_ID_MONITOR,
+            notify=False,
+            severity="info",
         )
         return
 
@@ -146,6 +148,8 @@ def run_monitor(prompts: dict[str, str]) -> None:
             "仅发现普通低重要性公司消息，已按偏好减少推送",
             token=settings.TG_BOT_TOKEN_MONITOR,
             chat_id=settings.TG_CHAT_ID_MONITOR,
+            notify=False,
+            severity="info",
         )
         return
 
@@ -170,6 +174,8 @@ def run_monitor(prompts: dict[str, str]) -> None:
             "未发现重要性为高或偏高的消息，已按偏好过滤",
             token=settings.TG_BOT_TOKEN_MONITOR,
             chat_id=settings.TG_CHAT_ID_MONITOR,
+            notify=False,
+            severity="info",
         )
         return
 
@@ -293,4 +299,6 @@ def run_monitor(prompts: dict[str, str]) -> None:
             "DeepSeek 未识别需提醒的市场信息",
             token=settings.TG_BOT_TOKEN_MONITOR,
             chat_id=settings.TG_CHAT_ID_MONITOR,
+            notify=False,
+            severity="info",
         )
