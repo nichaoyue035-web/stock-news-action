@@ -96,8 +96,8 @@ def _split_message(
 
 
 def send_tg(content, token=None, chat_id=None) -> bool:
-    use_token = token if token else settings.TG_BOT_TOKEN
-    use_chat_id = chat_id if chat_id else settings.TG_CHAT_ID
+    use_token = settings.TG_BOT_TOKEN if token is None else token
+    use_chat_id = settings.TG_CHAT_ID if chat_id is None else chat_id
 
     if not use_token or not use_chat_id:
         message = "⚠️ TG_BOT_TOKEN 或 TG_CHAT_ID 未配置，跳过 Telegram 推送"
@@ -110,9 +110,10 @@ def send_tg(content, token=None, chat_id=None) -> bool:
     chunks = list(_split_message(safe_content))
 
     for index, chunk in enumerate(chunks, start=1):
+        chunk_text = f"[{index}/{len(chunks)}]\n{chunk}" if len(chunks) > 1 else chunk
         payload = {
             "chat_id": use_chat_id,
-            "text": chunk,
+            "text": chunk_text,
             "disable_web_page_preview": True,
         }
         try:

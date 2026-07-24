@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from functools import wraps
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from core.data_fetcher import get_data_source_health
 from utils.notifier import log_info, send_tg
 
 CURRENT_RUN_SUMMARY: dict[str, Any] | None = None
+RUN_SUMMARY_FILE = "run_summary.txt"
 
 
 def _start_run_summary(mode: str) -> None:
@@ -87,13 +88,8 @@ def _derive_run_status(summary: dict[str, Any]) -> str:
     return "success"
 
 
-def _print_run_summary() -> None:
-    summary = _get_run_summary()
-    if summary is None:
-        return
-
-    summary["status"] = _derive_run_status(summary)
-    print("[RUN SUMMARY]")
+def _render_run_summary(summary: dict[str, Any]) -> list[str]:
+    lines = ["[RUN SUMMARY]"]
     for key in (
         "mode",
         "data_fetch_success",
@@ -112,7 +108,28 @@ def _print_run_summary() -> None:
             value = "null"
         elif isinstance(value, bool):
             value = str(value).lower()
-        print(f"{key}={value}")
+        lines.append(f"{key}={value}")
+    return lines
+
+
+def _write_run_summary_file(lines: list[str]) -> None:
+    try:
+        with open(RUN_SUMMARY_FILE, "w", encoding="utf-8") as file:
+            file.write("\n".join(lines) + "\n")
+    except Exception as exc:
+        log_info(f"⚠️ 运行摘要文件写入失败: {exc.__class__.__name__}")
+
+
+def _print_run_summary() -> None:
+    summary = _get_run_summary()
+    if summary is None:
+        return
+
+    summary["status"] = _derive_run_status(summary)
+    lines = _render_run_summary(summary)
+    for line in lines:
+        print(line)
+    _write_run_summary_file(lines)
 
 
 def _with_run_summary(mode_value: str | Callable[..., str]):
@@ -190,6 +207,8 @@ def _send_health_status(
     formatter=None,
     token: str | None = None,
     chat_id: str | None = None,
+    notify: bool = True,
+    severity: Literal["info", "partial", "failed"] | None = None,
 ) -> None:
     if formatter is None:
         from core.formatter import _format_source_health_line
@@ -204,12 +223,14 @@ def _send_health_status(
         "失败",
         "正文为空",
     )
-    status = (
+    status = severity or (
         "failed" if any(marker in reason for marker in failure_markers) else "partial"
     )
     _set_run_reason(reason, status=status)
     message = _format_health_status_message(reason, formatter)
     log_info(message)
+    if not notify:
+        return
     _set_run_summary(telegram_attempted=True)
     try:
         sent = send_tg(message, token=token, chat_id=chat_id)

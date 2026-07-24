@@ -41,3 +41,10 @@ jobs:
           GLOBAL_NEWS_RSS: ${{ secrets.GLOBAL_NEWS_RSS }}
           CUSTOM_NEWS_RSS: ${{ secrets.CUSTOM_NEWS_RSS }}
         run: python main.py track
+      - name: Upload Run Summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-summary
+          path: run_summary.txt
+          if-no-files-found: ignore

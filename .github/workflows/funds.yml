@@ -31,3 +31,10 @@ jobs:
           CUSTOM_NEWS_RSS: ${{ secrets.CUSTOM_NEWS_RSS }}
         # 运行 funds 模式
         run: python main.py funds
+      - name: Upload Run Summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-summary
+          path: run_summary.txt
+          if-no-files-found: ignore

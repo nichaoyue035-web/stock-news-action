@@ -150,3 +150,125 @@ def test_redact_sensitive_text_redacts_configured_secrets(monkeypatch):
     monkeypatch.setattr(settings, "DEEPSEEK_API_KEY", "secret-key")
 
     assert redact_sensitive_text("failed with secret-key") == "failed with <redacted>"
+
+
+def test_send_tg_prefixes_split_chunks(monkeypatch):
+    from config import settings
+    from utils import notifier
+
+    posted_payloads = []
+
+    class DummyResponse:
+        status_code = 200
+        text = "ok"
+
+    def fake_post(url, json, timeout):
+        posted_payloads.append(json)
+        return DummyResponse()
+
+    monkeypatch.setattr(settings, "TG_BOT_TOKEN", "token")
+    monkeypatch.setattr(settings, "TG_CHAT_ID", "chat")
+    monkeypatch.setattr(notifier.requests, "post", fake_post)
+
+    assert notifier.send_tg("A" * 4000) is True
+    assert posted_payloads[0]["text"].startswith("[1/2]\n")
+    assert posted_payloads[1]["text"].startswith("[2/2]\n")
+
+
+def test_health_status_can_skip_telegram_notification(monkeypatch):
+    import core.runtime as runtime
+
+    def fail_send_tg(*args, **kwargs):
+        raise AssertionError("send_tg should not be called")
+
+    monkeypatch.setattr(runtime, "send_tg", fail_send_tg)
+    runtime._start_run_summary("monitor")
+
+    runtime._send_health_status("未发现重要信息", notify=False, severity="info")
+
+    summary = runtime._get_run_summary()
+    assert summary["status"] == "info"
+    assert summary["telegram_attempted"] is False
+
+
+def test_should_retry_ai_error_only_for_transient_statuses():
+    import httpx
+    from openai import APIConnectionError, APIStatusError
+    from utils.ai_client import _should_retry_ai_error
+
+    request = httpx.Request("POST", "https://api.deepseek.com")
+    rate_limited = APIStatusError(
+        "rate limited",
+        response=httpx.Response(429, request=request),
+        body=None,
+    )
+    bad_request = APIStatusError(
+        "bad request",
+        response=httpx.Response(400, request=request),
+        body=None,
+    )
+
+    assert _should_retry_ai_error(APIConnectionError(request=request)) is True
+    assert _should_retry_ai_error(rate_limited) is True
+    assert _should_retry_ai_error(bad_request) is False
+    assert _should_retry_ai_error(ValueError("bad")) is False
+
+
+def test_run_recommend_success_without_network(monkeypatch, tmp_path):
+    import core.analyzer as analyzer
+    import core.runtime as runtime
+    import core.analyzers.recommend as recommend_module
+    from config import settings
+
+    sent_messages = []
+    pick_file = tmp_path / "stock_pick.json"
+    history_file = tmp_path / "history.csv"
+
+    monkeypatch.setattr(settings, "PICK_FILE", str(pick_file))
+    monkeypatch.setattr(settings, "HISTORY_FILE", str(history_file))
+    monkeypatch.setattr(
+        recommend_module,
+        "get_hot_stocks_data",
+        lambda: [{"name": "真实候选", "code": "000001", "pct": "1%", "amount": "10亿"}],
+    )
+    monkeypatch.setattr(
+        recommend_module,
+        "get_news",
+        lambda minutes: [
+            {
+                "title": "测试新闻",
+                "digest": "测试摘要",
+                "source": "test",
+                "time_str": "09:30",
+                "category": "industry",
+                "importance": "medium",
+                "market_scope": "行业",
+                "related_sectors": [],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        recommend_module,
+        "get_stock_quote",
+        lambda code: {"name": "真实候选", "price": "10.00", "pct": "1.00"},
+    )
+    monkeypatch.setattr(
+        analyzer,
+        "get_ai_response",
+        lambda *args, **kwargs: (
+            '{"name":"真实候选","code":"000001","reason":"测试理由"}'
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "send_tg",
+        lambda content, **kwargs: sent_messages.append(content) or True,
+    )
+    monkeypatch.setattr(runtime, "RUN_SUMMARY_FILE", str(tmp_path / "run_summary.txt"))
+
+    analyzer.run_recommend()
+
+    assert pick_file.exists()
+    assert history_file.exists()
+    assert sent_messages
+    assert "真实候选" in sent_messages[0]
