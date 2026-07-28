@@ -126,6 +126,12 @@ RADAR_INVALIDATION_PCT = _env_positive_float("RADAR_INVALIDATION_PCT", 3.0)
 # US radar uses Polygon only when a key is explicitly configured. This keeps the
 # A-share radar usable without creating a paid external data dependency.
 POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "").strip()
+
+# Explicitly local-development only.  The yfinance probe never joins the radar
+# timer, Telegram delivery, or candidate-tracking workflow.
+YFINANCE_DEV_TICKERS = _parse_rss_url_list(os.getenv("YFINANCE_DEV_TICKERS", ""))
+YFINANCE_DEV_BROAD_SCAN = os.getenv("YFINANCE_DEV_BROAD_SCAN", "").strip() == "1"
+
 US_RADAR_MIN_PRICE = _env_positive_float("US_RADAR_MIN_PRICE", 1.0)
 US_RADAR_MAX_PRICE = _env_positive_float("US_RADAR_MAX_PRICE", 5.0)
 US_RADAR_MIN_DAY_CHANGE_PCT = _env_positive_float(

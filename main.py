@@ -170,6 +170,11 @@ def main() -> None:
 
         run_telegram_listener()
         return
+    if mode == "yfinance_dev":
+        from core.yfinance_dev import run_yfinance_dev_probe
+
+        run_yfinance_dev_probe()
+        return
     run_recommend, run_track, run_analysis, run_review, log_info, log_error = (
         _bootstrap_modules()
     )

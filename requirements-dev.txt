@@ -1,2 +1,3 @@
 pytest==9.0.2
 ruff==0.14.8
+yfinance==1.5.2
