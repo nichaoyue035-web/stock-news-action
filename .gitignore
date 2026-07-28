@@ -3,4 +3,6 @@ __pycache__/
 .venv/
 .pytest_cache/
 monitor_seen.json
-runtime_status.json
+monitor.db
+monitor.db-shm
+monitor.db-wal
