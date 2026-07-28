@@ -9,6 +9,7 @@ from core.analyzers.monitor import (
     _is_low_value_company_news,
     _is_monitor_alert_importance,
     _load_recent_monitor_alerts,
+    _parse_monitor_alert_line,
     _record_monitor_alerts,
 )
 from utils.notifier import _split_message
@@ -70,10 +71,42 @@ def test_monitor_only_allows_high_or_elevated_importance():
 
 
 def test_monitor_only_keeps_black_swan_candidates():
-    assert _is_black_swan_candidate({"title": "突发军事冲突升级", "digest": ""})
-    assert _is_black_swan_candidate({"title": "Global market circuit breaker", "digest": ""})
+    trusted = {
+        "source": "eastmoney",
+        "link": "https://eastmoney.com/news/1",
+        "importance": "high",
+    }
+    assert _is_black_swan_candidate(
+        {"title": "突发军事冲突升级", "digest": "", **trusted}
+    )
+    assert _is_black_swan_candidate(
+        {"title": "Global market circuit breaker", "digest": "", **trusted}
+    )
     assert not _is_black_swan_candidate({"title": "公司发布季度业绩", "digest": ""})
     assert not _is_black_swan_candidate({"title": "行业政策支持出台", "digest": ""})
+
+
+def test_monitor_rejects_untrusted_or_contextual_black_swan_mentions():
+    assert not _is_black_swan_candidate(
+        {"title": "某自媒体称可能开战", "digest": "", "source": "unknown"}
+    )
+    assert not _is_black_swan_candidate(
+        {
+            "title": "历史回顾中的战争与市场",
+            "digest": "",
+            "source": "eastmoney",
+            "importance": "high",
+        }
+    )
+
+
+def test_monitor_alert_protocol_is_one_based_and_preserves_pipes():
+    assert _parse_monitor_alert_line("ALERT|1|市场冲击|需核实", 2) == (
+        0,
+        "市场冲击|需核实",
+    )
+    assert _parse_monitor_alert_line("ALERT|0|错误编号", 2) is None
+    assert _parse_monitor_alert_line("ALERT|3|越界", 2) is None
 
 
 def test_monitor_fast_fetch_skips_ai_preprocessing(monkeypatch):
@@ -153,12 +186,25 @@ def test_validate_pick_normalizes_candidate_name_and_code():
 
 def test_send_tg_returns_false_when_missing_credentials(monkeypatch):
     from config import settings
-    from utils.notifier import send_tg
+    import utils.notifier as notifier
 
     monkeypatch.setattr(settings, "TG_BOT_TOKEN", None)
     monkeypatch.setattr(settings, "TG_CHAT_ID", None)
+    monkeypatch.setattr(notifier, "_is_ci", lambda: False)
 
-    assert send_tg("hello", token="", chat_id="") is False
+    assert notifier.send_tg("hello", token="", chat_id="") is False
+
+
+def test_send_tg_raises_in_ci_when_credentials_missing(monkeypatch):
+    from config import settings
+    import utils.notifier as notifier
+
+    monkeypatch.setattr(settings, "TG_BOT_TOKEN", None)
+    monkeypatch.setattr(settings, "TG_CHAT_ID", None)
+    monkeypatch.setattr(notifier, "_is_ci", lambda: True)
+
+    with pytest.raises(RuntimeError):
+        notifier.send_tg("hello", token="", chat_id="")
 
 
 def test_append_history_reports_write_failure(monkeypatch, tmp_path):
@@ -217,3 +263,43 @@ def test_redact_sensitive_text_redacts_configured_secrets(monkeypatch):
     monkeypatch.setattr(settings, "DEEPSEEK_API_KEY", "secret-key")
 
     assert redact_sensitive_text("failed with secret-key") == "failed with <redacted>"
+
+
+def test_forward_returns_use_fixed_trading_sessions():
+    from core.analyzers.review import _calculate_forward_returns
+
+    closes = [{"close": 101 + idx} for idx in range(20)]
+    returns = _calculate_forward_returns("100", closes)
+
+    assert returns[1] == pytest.approx(1.0)
+    assert returns[5] == pytest.approx(5.0)
+    assert returns[20] == pytest.approx(20.0)
+
+
+def test_local_language_detection_skips_translation_ai(monkeypatch):
+    import core.data_fetcher as data_fetcher
+
+    monkeypatch.setattr(
+        data_fetcher,
+        "get_ai_response",
+        lambda *_args, **_kwargs: pytest.fail("Chinese news should not call AI"),
+    )
+    items = [{"title": "中国市场新闻", "digest": "测试内容"}]
+
+    assert data_fetcher._normalize_external_news(items) == items
+
+
+def test_semantic_dedup_skips_ai_for_dissimilar_titles(monkeypatch):
+    import core.data_fetcher as data_fetcher
+
+    monkeypatch.setattr(
+        data_fetcher,
+        "get_ai_response",
+        lambda *_args, **_kwargs: pytest.fail("Dissimilar titles should not call AI"),
+    )
+    items = [
+        {"title": "央行发布新的货币政策操作说明"},
+        {"title": "某汽车公司公布新车型交付数据"},
+    ]
+
+    assert data_fetcher._deduplicate_semantic_news(items) == items

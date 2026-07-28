@@ -1,0 +1,10 @@
+[Unit]
+Description=Run stock-news after-market review
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 15:20:00 Asia/Shanghai
+Persistent=true
+Unit=stock-news@after_market.service
+
+[Install]
+WantedBy=timers.target
