@@ -1,0 +1,10 @@
+[Unit]
+Description=Run stock-news funds radar on A-share trading days
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 15:10:00 Asia/Shanghai
+Persistent=true
+Unit=stock-news@funds.service
+
+[Install]
+WantedBy=timers.target
