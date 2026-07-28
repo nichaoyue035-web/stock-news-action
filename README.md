@@ -51,11 +51,13 @@
 | `monitor` | 分钟级双通道监控 | 用规则即时推送重要新闻，并对自选股记录分钟行情、提醒短时大幅异动；推送到监控频道 |
 | `periodic` | 盘中茶歇简报 | 先展示可核对的盘中新闻事实，再给出待验证的市场主线与观察条件 |
 | `after_market` | 每日收盘复盘 | 先展示当日可核对新闻事实，再给出收盘结构与下个交易日验证点；周末跳过发送 |
+| `radar` | 实时标的雷达 | 对配置的 A 股和可选美股数据建立自动短时追踪，按确认、失效或到期推送状态 |
 | `global` | 国际宏观与板块雷达 | 从近 3 小时新闻中提炼可能影响全球市场或 A 股映射的海外事件，推送到监控频道 |
 | `recommend` | AI 每日股票观察 | 从热门股票和近期新闻中选择一个观察标的，保存到 `stock_pick.json` 并写入 `history.csv` |
 | `track` | 跟踪已选观察标的 | 读取 `stock_pick.json` 中的标的，获取最新行情并生成简短跟踪观点 |
 | `review` | 历史表现回看 | 读取 `history.csv`，按 T+1、T+5、T+20 交易日统一计算正收益占比和平均收益 |
 | `daily_health` | VPS 每日健康提醒 | 向监控 Telegram 频道推送最近一次任务状态；失败、异常或状态过期会明确标红 |
+| `telegram_listener` | 雷达交互监听服务 | 常驻接收雷达消息按钮，用于延长或停止已自动开始的追踪 |
 
 > 说明：`SUPPORTED_ANALYSIS_MODES` 与 `REQUIRED_ENV_BY_MODE` 在 `main.py` 中分别维护。README 仅说明当前代码支持的分发模式，不代表每个模式都适合高频运行或能覆盖所有投资场景。
 
@@ -76,6 +78,13 @@
 | `PRICE_ALERT_MINUTE_CHANGE_PCT` | 短时价格异动阈值（百分比） | `monitor` 行情通道；默认 `1.0` |
 | `PRICE_ALERT_COOLDOWN_MINUTES` | 同一股票同方向异动的提醒冷却时间 | `monitor` 行情通道；默认 `15` 分钟 |
 | `PRICE_ALERT_MAX_COMPARISON_GAP_MINUTES` | 允许与上一笔行情采样比较的最大间隔 | `monitor` 行情通道；默认 `3` 分钟，避免服务中断后误报 |
+| `RADAR_A_SHARE_CODES` | 雷达专用 A 股代码，逗号分隔 | `radar`；与原有 `WATCHLIST_CODES` 分离，避免改变现有监控行为 |
+| `RADAR_A_SHARE_MINUTE_CHANGE_PCT` | A 股短时异动阈值（百分比） | `radar`；默认 `1.5` |
+| `POLYGON_API_KEY` | Polygon 美股行情 Key | `radar` 的美股扫描与单标的追踪；不配置则跳过美股，不伪装为正常取数 |
+| `US_RADAR_MIN_PRICE` / `US_RADAR_MAX_PRICE` | 美股候选价格区间 | 默认 `$1–5` |
+| `US_RADAR_MIN_DAY_CHANGE_PCT` | 美股当日最小涨幅（百分比） | 默认 `10` |
+| `US_RADAR_MIN_DOLLAR_VOLUME` | 美股最小成交额（美元） | 默认 `1000000`，过滤低流动性噪音 |
+| `TG_INTERACTION_ALLOWED_USER_IDS` | 可操作雷达按钮的 Telegram 用户 ID | 群聊必须配置；私聊默认仅允许该私聊账号 |
 
 示例：
 
@@ -88,6 +97,9 @@ export TG_CHAT_ID_MONITOR="your_monitor_chat_id"
 export CUSTOM_NEWS_RSS="https://example.com/feed.xml,https://another-site.com/rss"
 export WATCHLIST_CODES="600519,000001"
 export PRICE_ALERT_MINUTE_CHANGE_PCT="1.0"
+export RADAR_A_SHARE_CODES="600519,000001"
+export POLYGON_API_KEY="your_polygon_key"
+export TG_INTERACTION_ALLOWED_USER_IDS="your_telegram_user_id"
 ```
 
 ## 6. 本地运行方法
@@ -115,6 +127,7 @@ python main.py periodic
 python main.py after_market
 python main.py track
 python main.py review
+python main.py radar
 ```
 
 ### 分钟级监控说明
@@ -140,6 +153,35 @@ GitHub Actions 更适合作为手动回退或日常任务，不应作为此监�
 
 如果缺少必要环境变量，程序会在启动时提示缺少哪些 Secrets。
 
+### 互动式实时标的雷达
+
+`radar` 是独立于原 `monitor` 的候选追踪链路，不会自动交易，也不会修改
+`WATCHLIST_CODES`。它的流程是：
+
+1. 对 `RADAR_A_SHARE_CODES` 每分钟建立 A 股报价基线；只有短时变动达到
+   `RADAR_A_SHARE_MINUTE_CHANGE_PCT` 才建立候选。
+2. 如配置了 `POLYGON_API_KEY`，在美东盘前、盘中和盘后扫描满足价格、涨幅和成交额
+   过滤条件的美股候选；没有可核对新闻时会明确标为“未确认催化”。
+3. 候选一出现即自动追踪，不等待 Telegram 点击。初始窗口内仅在条件暂未失效、触及
+   失效阈值或追踪到期时推送一次状态，避免刷屏。
+4. Telegram 按钮只能延长或停止追踪。它不是下单入口，也不会让旧价格直接变成操作指令；
+   只有允许的 Telegram 用户可以点击生效。
+
+美股首版通过 Polygon 快照接口按分钟取数，因此实际新鲜度受你的 Polygon 套餐和交易所
+数据权限影响。若数据源返回失败，日志会明确报错；未配置 Key 时则只运行 A 股部分。
+不要把延迟行情或单次异动理解为交易信号。
+
+雷达与按钮监听需要分别启用：
+
+```bash
+python main.py radar
+python main.py telegram_listener
+```
+
+`telegram_listener` 使用 Telegram 长轮询，不需要向公网开放 Webhook 端口。一个 Bot
+只能有一个监听进程；如果该 Bot 已设置 Webhook，需要先清理 Webhook 或改用该 Webhook
+接收按钮回调。
+
 ## 7. 数据文件与提示词
 
 | 文件 | 说明 |
@@ -148,7 +190,7 @@ GitHub Actions 更适合作为手动回退或日常任务，不应作为此监�
 | `config/settings.py` | 默认配置、数据源地址、环境变量读取、默认 Prompt。 |
 | `stock_pick.json` | `recommend` 模式保存的当前观察标的。 |
 | `history.csv` | `recommend` 模式追加的历史观察记录，`review` 模式会读取它做表现回看。 |
-| `monitor.db` | `monitor` 的 SQLite 状态库，保存原始新闻、分钟行情和告警投递状态；不提交到 Git。 |
+| `monitor.db` | `monitor` 与 `radar` 的 SQLite 状态库，保存原始新闻、行情基线、候选追踪、按钮游标和告警投递状态；不提交到 Git。 |
 
 ## 8. 海外 RSS 与自定义信息源
 
@@ -175,6 +217,7 @@ python main.py daily
 - `recommend` 模式只是生成一个观察标的，不代表买入建议。
 - `track` 和 `review` 只能基于已有记录做简单跟踪，不能证明策略有效。
 - 本项目不会自动交易，也不应被用于无人监督的交易决策。
+- `radar` 的“确认／失效”只是预设信息条件是否仍成立，不是个性化买卖、仓位或止损建议。
 - 使用前请自行核对新闻原文、行情数据和风险承受能力。
 
 ## 10. 适合的使用方式
@@ -214,6 +257,8 @@ sudo systemctl enable --now stock-news-periodic.timer
 sudo systemctl enable --now stock-news-after-market.timer
 sudo systemctl enable --now stock-news-funds.timer
 sudo systemctl enable --now stock-news-daily-health.timer
+sudo systemctl enable --now stock-news-radar.timer
+sudo systemctl enable --now stock-news-interaction.service
 systemctl list-timers 'stock-news-*'
 ```
 

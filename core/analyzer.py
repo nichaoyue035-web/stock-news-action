@@ -163,6 +163,11 @@ def run_analysis(mode: str) -> None:
 
         run_after_market(prompts)
         return
+    if mode == "radar":
+        from core.radar import run_radar
+
+        run_radar()
+        return
 
 
 @_with_run_summary("review")

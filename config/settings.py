@@ -1,8 +1,10 @@
 import os
-from datetime import timezone, timedelta
+from datetime import timedelta, timezone
+from zoneinfo import ZoneInfo
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHA_TZ = timezone(timedelta(hours=8), "Asia/Shanghai")
+US_EASTERN_TZ = ZoneInfo("America/New_York")
 
 # 1. 主机器人
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
@@ -33,6 +35,11 @@ URL_NEWS = "https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_100_
 URL_FUNDS = "https://push2.eastmoney.com/api/qt/clist/get"
 URL_QUOTE = "https://push2.eastmoney.com/api/qt/stock/get"
 URL_HISTORY = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+URL_POLYGON_SNAPSHOTS = "https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers"
+URL_POLYGON_SINGLE_SNAPSHOT = (
+    "https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{symbol}"
+)
+URL_POLYGON_NEWS = "https://api.polygon.io/v2/reference/news"
 
 # 海外默认信息源（可通过环境变量覆盖）
 # 旧地址 feeds.reuters.com 已经不稳定/失效，改为 Reuters Agency 新 feed 结构
@@ -66,6 +73,19 @@ def _env_positive_float(name, default):
     return value if value > 0 else default
 
 
+def _parse_integer_list(raw_value):
+    """Parse a comma-separated allowlist while ignoring malformed entries."""
+    values = []
+    for item in _parse_rss_url_list(raw_value):
+        try:
+            value = int(item)
+        except ValueError:
+            continue
+        if value not in values:
+            values.append(value)
+    return values
+
+
 # 额外信息源（RSS），支持多个地址，用英文逗号或中文逗号分隔。
 # 示例：https://example.com/feed.xml,https://another-site.com/rss
 CUSTOM_NEWS_RSS = _parse_rss_url_list(os.getenv("CUSTOM_NEWS_RSS", ""))
@@ -89,6 +109,47 @@ PRICE_ALERT_COOLDOWN_MINUTES = _env_positive_int(
 )
 PRICE_ALERT_MAX_COMPARISON_GAP_MINUTES = _env_positive_int(
     "PRICE_ALERT_MAX_COMPARISON_GAP_MINUTES", 3
+)
+
+# Interactive market radar. It intentionally uses a separate configured A-share
+# list so the existing WATCHLIST_CODES monitor keeps its current behaviour.
+RADAR_A_SHARE_CODES = [
+    code for code in _parse_rss_url_list(os.getenv("RADAR_A_SHARE_CODES", "")) if code
+]
+RADAR_A_SHARE_MINUTE_CHANGE_PCT = _env_positive_float(
+    "RADAR_A_SHARE_MINUTE_CHANGE_PCT", 1.5
+)
+RADAR_INITIAL_TRACK_MINUTES = _env_positive_int("RADAR_INITIAL_TRACK_MINUTES", 10)
+RADAR_CONFIRM_AFTER_MINUTES = _env_positive_int("RADAR_CONFIRM_AFTER_MINUTES", 2)
+RADAR_INVALIDATION_PCT = _env_positive_float("RADAR_INVALIDATION_PCT", 3.0)
+
+# US radar uses Polygon only when a key is explicitly configured. This keeps the
+# A-share radar usable without creating a paid external data dependency.
+POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "").strip()
+US_RADAR_MIN_PRICE = _env_positive_float("US_RADAR_MIN_PRICE", 1.0)
+US_RADAR_MAX_PRICE = _env_positive_float("US_RADAR_MAX_PRICE", 5.0)
+US_RADAR_MIN_DAY_CHANGE_PCT = _env_positive_float(
+    "US_RADAR_MIN_DAY_CHANGE_PCT", 10.0
+)
+US_RADAR_MIN_DOLLAR_VOLUME = _env_positive_float(
+    "US_RADAR_MIN_DOLLAR_VOLUME", 1_000_000.0
+)
+
+# Radar messages go to the monitoring bot by default. A private monitoring chat
+# is also safely treated as its own allowed user; group chats must set an
+# explicit allowlist before callback buttons can change tracking state.
+INTERACTION_BOT_TOKEN = (
+    os.getenv("TG_INTERACTION_BOT_TOKEN", "").strip()
+    or TG_BOT_TOKEN_MONITOR
+    or TG_BOT_TOKEN
+)
+INTERACTION_CHAT_ID = (
+    os.getenv("TG_INTERACTION_CHAT_ID", "").strip()
+    or TG_CHAT_ID_MONITOR
+    or TG_CHAT_ID
+)
+INTERACTION_ALLOWED_USER_IDS = _parse_integer_list(
+    os.getenv("TG_INTERACTION_ALLOWED_USER_IDS", "")
 )
 
 DEFAULT_PROMPTS = {

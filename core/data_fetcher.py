@@ -1093,6 +1093,151 @@ def get_stock_quote(code: Any) -> Optional[dict[str, str]]:
         return None
 
 
+def _as_positive_float(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _normalise_polygon_snapshot(item: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Return the small, provider-neutral quote shape used by the radar."""
+    day = item.get("day") if isinstance(item.get("day"), dict) else {}
+    last_trade = (
+        item.get("lastTrade") if isinstance(item.get("lastTrade"), dict) else {}
+    )
+    price = _as_positive_float(last_trade.get("p")) or _as_positive_float(day.get("c"))
+    symbol = str(item.get("ticker") or "").strip().upper()
+    if not symbol or price is None:
+        return None
+
+    change_pct = item.get("todaysChangePerc")
+    try:
+        pct = float(change_pct)
+    except (TypeError, ValueError):
+        pct = 0.0
+    try:
+        volume = float(day.get("v") or 0)
+    except (TypeError, ValueError):
+        volume = 0.0
+    return {
+        "symbol": symbol,
+        "name": str(item.get("ticker") or symbol),
+        "price": price,
+        "pct": pct,
+        "volume": volume,
+        "dollar_volume": price * volume,
+        "source": "polygon",
+    }
+
+
+def get_us_stock_snapshots() -> list[dict[str, Any]]:
+    """Fetch US stock snapshots when Polygon is explicitly configured."""
+    if not settings.POLYGON_API_KEY:
+        return []
+    try:
+        response = requests.get(
+            settings.URL_POLYGON_SNAPSHOTS,
+            params={"apiKey": settings.POLYGON_API_KEY, "include_otc": "false"},
+            timeout=15,
+        )
+        response.raise_for_status()
+        raw_items = response.json().get("tickers", [])
+        if not isinstance(raw_items, list):
+            record_data_source_health("Polygon 美股行情", "failed", "返回格式异常", 0)
+            return []
+        snapshots = [
+            normalised
+            for item in raw_items
+            if isinstance(item, dict)
+            and (normalised := _normalise_polygon_snapshot(item)) is not None
+        ]
+        record_data_source_health("Polygon 美股行情", "success", "", len(snapshots))
+        return snapshots
+    except Exception as exc:
+        reason = _redact_sensitive_text(exc)
+        record_data_source_health("Polygon 美股行情", "failed", reason, 0)
+        log_error(f"❌ Polygon 美股行情获取失败: {reason}")
+        return []
+
+
+def get_us_stock_quote(symbol: str) -> Optional[dict[str, Any]]:
+    """Fetch one US stock snapshot for an active radar candidate."""
+    clean_symbol = str(symbol or "").strip().upper()
+    if not settings.POLYGON_API_KEY or not clean_symbol:
+        return None
+    try:
+        response = requests.get(
+            settings.URL_POLYGON_SINGLE_SNAPSHOT.format(symbol=clean_symbol),
+            params={"apiKey": settings.POLYGON_API_KEY},
+            timeout=10,
+        )
+        response.raise_for_status()
+        raw_item = response.json().get("ticker")
+        if not isinstance(raw_item, dict):
+            record_data_source_health("Polygon 美股行情", "failed", "单标的返回为空", 0)
+            return None
+        quote = _normalise_polygon_snapshot(raw_item)
+        if quote is None:
+            record_data_source_health("Polygon 美股行情", "failed", "单标的字段不完整", 0)
+            return None
+        record_data_source_health("Polygon 美股行情", "success", "", 1)
+        return quote
+    except Exception as exc:
+        reason = _redact_sensitive_text(exc)
+        record_data_source_health("Polygon 美股行情", "failed", reason, 0)
+        log_error(f"❌ Polygon 单标的行情获取失败 [{clean_symbol}]: {reason}")
+        return None
+
+
+def get_us_stock_news(symbol: str, limit: int = 2) -> list[dict[str, str]]:
+    """Fetch recent source-attributed headlines for one US radar candidate."""
+    clean_symbol = str(symbol or "").strip().upper()
+    if not settings.POLYGON_API_KEY or not clean_symbol:
+        return []
+    try:
+        response = requests.get(
+            settings.URL_POLYGON_NEWS,
+            params={
+                "apiKey": settings.POLYGON_API_KEY,
+                "ticker": clean_symbol,
+                "limit": max(1, min(limit, 10)),
+                "order": "desc",
+                "sort": "published_utc",
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        raw_items = response.json().get("results", [])
+        if not isinstance(raw_items, list):
+            record_data_source_health("Polygon 美股新闻", "failed", "返回格式异常", 0)
+            return []
+        news: list[dict[str, str]] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "").strip()
+            if not title:
+                continue
+            publisher = item.get("publisher") if isinstance(item.get("publisher"), dict) else {}
+            news.append(
+                {
+                    "title": title,
+                    "source": str(publisher.get("name") or "Polygon 新闻").strip(),
+                    "link": str(item.get("article_url") or "").strip(),
+                    "published_at": str(item.get("published_utc") or "").strip(),
+                }
+            )
+        record_data_source_health("Polygon 美股新闻", "success", "", len(news))
+        return news
+    except Exception as exc:
+        reason = _redact_sensitive_text(exc)
+        record_data_source_health("Polygon 美股新闻", "failed", reason, 0)
+        log_error(f"❌ Polygon 美股新闻获取失败 [{clean_symbol}]: {reason}")
+        return []
+
+
 def get_stock_history_closes(
     code: Any, start_date: str, max_sessions: int = 20
 ) -> list[dict[str, Any]]:
