@@ -40,12 +40,10 @@ def test_monitor_does_not_require_deepseek_credentials(monkeypatch):
     main._validate_required_env("monitor")
 
 
-def test_funds_requires_dedicated_bot_credentials(monkeypatch):
-    monkeypatch.delenv("TG_BOT_TOKEN", raising=False)
-    monkeypatch.delenv("TG_CHAT_ID", raising=False)
+def test_funds_uses_primary_bot_credentials(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "key")
-    monkeypatch.setenv("TG_BOT_TOKEN_FUNDS", "funds-token")
-    monkeypatch.setenv("TG_CHAT_ID_FUNDS", "funds-chat")
+    monkeypatch.setenv("TG_BOT_TOKEN", "primary-token")
+    monkeypatch.setenv("TG_CHAT_ID", "primary-chat")
 
     main._validate_required_env("funds")
 
@@ -368,14 +366,14 @@ def test_important_company_alert_does_not_overstate_sector_signal():
     assert "交易条款、审批条件、财务影响" in content
 
 
-def test_funds_sends_result_to_dedicated_bot(monkeypatch):
+def test_funds_sends_result_to_primary_bot(monkeypatch):
     import core.analyzer as analyzer
     import core.analyzers.funds as funds
     import core.runtime as runtime
 
     sent_messages = []
-    monkeypatch.setattr(settings, "TG_BOT_TOKEN_FUNDS", "funds-token")
-    monkeypatch.setattr(settings, "TG_CHAT_ID_FUNDS", "funds-chat")
+    monkeypatch.setattr(settings, "TG_BOT_TOKEN", "primary-token")
+    monkeypatch.setattr(settings, "TG_CHAT_ID", "primary-chat")
     monkeypatch.setattr(
         funds,
         "get_market_funds",
@@ -398,19 +396,16 @@ def test_funds_sends_result_to_dedicated_bot(monkeypatch):
 
     assert len(sent_messages) == 1
     assert "主力资金雷达" in sent_messages[0][0]
-    assert sent_messages[0][1] == {
-        "token": "funds-token",
-        "chat_id": "funds-chat",
-    }
+    assert sent_messages[0][1] == {}
 
 
-def test_funds_sends_empty_data_health_status_to_dedicated_bot(monkeypatch):
+def test_funds_sends_empty_data_health_status_to_primary_bot(monkeypatch):
     import core.analyzers.funds as funds
     import core.runtime as runtime
 
     sent_messages = []
-    monkeypatch.setattr(settings, "TG_BOT_TOKEN_FUNDS", "funds-token")
-    monkeypatch.setattr(settings, "TG_CHAT_ID_FUNDS", "funds-chat")
+    monkeypatch.setattr(settings, "TG_BOT_TOKEN", "primary-token")
+    monkeypatch.setattr(settings, "TG_CHAT_ID", "primary-chat")
     monkeypatch.setattr(funds, "get_market_funds", lambda: ([], []))
     monkeypatch.setattr(
         runtime,
@@ -423,8 +418,8 @@ def test_funds_sends_empty_data_health_status_to_dedicated_bot(monkeypatch):
     assert len(sent_messages) == 1
     assert "资金流数据为空" in sent_messages[0][0]
     assert sent_messages[0][1] == {
-        "token": "funds-token",
-        "chat_id": "funds-chat",
+        "token": None,
+        "chat_id": None,
     }
 
 
