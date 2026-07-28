@@ -233,6 +233,11 @@ python main.py health
 `Unit=` 改为 `stock-news-action@daily_health.service`，并以
 `stock-news-action-daily-health.timer` 的名称启用。
 
+市场监控的“重要市场提醒”和“紧急市场提醒”均会在“可能影响”中分开呈现确认度、
+传导路径、A 股映射和后续验证点。重要提醒会按政策、宏观、资金、行业、公司或海外
+类别生成可验证的分析；紧急提醒则按冲突、金融风险、供应链、清算或灾害等风险类型
+生成分析。该内容仅用于观察与核对，不构成买卖结论。
+
 监控去重文件应放在 `/var/lib/stock-news-action/` 等持久目录。GitHub Actions 的临时
 文件系统不会跨运行保存 `monitor_seen.json`，因此不应把 Actions 当作有状态监控器。
 
