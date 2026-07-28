@@ -134,7 +134,7 @@ def _with_run_summary(mode_value: str | Callable[..., str]):
     return decorator
 
 
-def _send_tg_with_summary(content: Any, **kwargs: Any) -> None:
+def _send_tg_with_summary(content: Any, **kwargs: Any) -> bool:
     _set_run_summary(telegram_attempted=True)
     try:
         sent = send_tg(content, **kwargs)
@@ -145,10 +145,11 @@ def _send_tg_with_summary(content: Any, **kwargs: Any) -> None:
     if not sent:
         _set_run_summary(telegram_sent=False, status="failed")
         _set_run_reason("telegram send failed")
-        return
+        return False
     summary = _get_run_summary() or {}
     status = "partial" if summary.get("status") == "partial" else "success"
     _set_run_summary(telegram_sent=True, status=status)
+    return True
 
 
 def _print_monitor_filter_summary(

@@ -1,9 +1,6 @@
 name: After Market Review
 
 on:
-  schedule:
-    # 北京时间 15:30 (UTC 7:30)
-    - cron: '30 7 * * 1-5'
   workflow_dispatch:
 
 jobs:

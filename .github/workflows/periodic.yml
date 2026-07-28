@@ -1,9 +1,6 @@
 name: Periodic Summary
 
 on:
-  schedule:
-    # 北京时间: 10:23, 13:23, 14:23 (盘中)
-    - cron: '23 2,5,6 * * 1-5'
   workflow_dispatch:
 
 jobs:

@@ -3,8 +3,13 @@ import pytest
 import main
 from core.formatter import _infer_news_category
 from core.analyzers.monitor import (
+    MONITOR_SEEN_TTL,
+    _filter_unseen_monitor_news,
+    _is_black_swan_candidate,
     _is_low_value_company_news,
     _is_monitor_alert_importance,
+    _load_recent_monitor_alerts,
+    _record_monitor_alerts,
 )
 from utils.notifier import _split_message
 
@@ -62,6 +67,68 @@ def test_monitor_only_allows_high_or_elevated_importance():
     assert _is_monitor_alert_importance({"importance": "偏高"}) is True
     assert _is_monitor_alert_importance({"importance": "medium"}) is False
     assert _is_monitor_alert_importance({"importance": "low"}) is False
+
+
+def test_monitor_only_keeps_black_swan_candidates():
+    assert _is_black_swan_candidate({"title": "突发军事冲突升级", "digest": ""})
+    assert _is_black_swan_candidate({"title": "Global market circuit breaker", "digest": ""})
+    assert not _is_black_swan_candidate({"title": "公司发布季度业绩", "digest": ""})
+    assert not _is_black_swan_candidate({"title": "行业政策支持出台", "digest": ""})
+
+
+def test_monitor_fast_fetch_skips_ai_preprocessing(monkeypatch):
+    import core.data_fetcher as data_fetcher
+
+    class FakeResponse:
+        text = '{"LivesList": []}'
+
+    monkeypatch.setattr(data_fetcher.requests, "get", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(data_fetcher, "_fetch_external_rss_news", lambda *_: [])
+    monkeypatch.setattr(
+        data_fetcher,
+        "_normalize_external_news",
+        lambda *_: pytest.fail("external translation should be skipped"),
+    )
+    monkeypatch.setattr(
+        data_fetcher,
+        "_deduplicate_semantic_news",
+        lambda *_: pytest.fail("semantic deduplication should be skipped"),
+    )
+
+    assert data_fetcher.get_news(
+        20, semantic_dedup=False, translate_external=False
+    ) == []
+
+
+def test_monitor_seen_state_prevents_repeated_alerts(monkeypatch, tmp_path):
+    from datetime import datetime
+    from config import settings
+
+    monkeypatch.setattr(settings, "MONITOR_STATE_FILE", str(tmp_path / "seen.json"))
+    now = datetime.now(settings.SHA_TZ)
+    item = {"title": "重要市场消息"}
+
+    _record_monitor_alerts({}, [item], now)
+    recent_alerts = _load_recent_monitor_alerts(now)
+
+    assert _filter_unseen_monitor_news([item], recent_alerts) == []
+    assert _filter_unseen_monitor_news(
+        [{"title": "另一条重要消息"}], recent_alerts
+    ) == [{"title": "另一条重要消息"}]
+
+
+def test_monitor_seen_state_expires_old_alerts(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta
+    from config import settings
+
+    monkeypatch.setattr(settings, "MONITOR_STATE_FILE", str(tmp_path / "seen.json"))
+    now = datetime.now(settings.SHA_TZ)
+    item = {"title": "过期消息"}
+    old_time = now - MONITOR_SEEN_TTL - timedelta(seconds=1)
+
+    _record_monitor_alerts({}, [item], old_time)
+
+    assert _load_recent_monitor_alerts(now) == {}
 
 
 def test_validate_pick_rejects_candidate_not_in_list():
