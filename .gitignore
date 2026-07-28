@@ -2,3 +2,6 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 monitor_seen.json
+monitor.db
+monitor.db-shm
+monitor.db-wal

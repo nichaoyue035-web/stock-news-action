@@ -1,22 +1,19 @@
-"""Monitor-mode analyzer implementation."""
+"""Rule-based news and watchlist monitor implementation."""
 
 from __future__ import annotations
 
-import json
-import os
-import re
-from datetime import datetime, timedelta
-from typing import Any
+from datetime import datetime, time, timedelta
+from typing import Any, Optional
 
 from config import settings
-from core.data_fetcher import get_news
+from core.data_fetcher import get_data_source_health, get_news, get_stock_quote
+from core.monitor_store import MonitorStore, news_event_key
 from utils.notifier import log_info
 
 
 SMALL_COMPANY_NEWS_CATEGORIES = {"company"}
 SMALL_COMPANY_NEWS_IMPORTANCE = {"low"}
 MONITOR_ALLOWED_IMPORTANCE = {"high", "高", "偏高"}
-MONITOR_SEEN_TTL = timedelta(hours=6)
 BLACK_SWAN_KEYWORDS = (
     "战争",
     "开战",
@@ -107,304 +104,351 @@ def _is_low_value_company_news(item: dict[str, Any]) -> bool:
     )
 
 
-def _monitor_news_key(item: dict[str, Any]) -> str:
-    """Return a stable key for preventing repeated monitor alerts."""
-    return re.sub(r"\s+", " ", str(item.get("title") or "")).strip()
+def _news_alert_severity(item: dict[str, Any]) -> Optional[str]:
+    """Classify only high-value news for deterministic, low-latency delivery."""
+    if _is_black_swan_candidate(item):
+        return "紧急"
+    if _is_low_value_company_news(item) or not _is_monitor_alert_importance(item):
+        return None
+
+    category = str(item.get("category") or "").strip().lower()
+    scope = str(item.get("market_scope") or "").strip()
+    text = f"{item.get('title', '')} {item.get('digest', '')}"
+    is_major_company_event = any(
+        keyword in text for keyword in SMALL_COMPANY_NEWS_HIGH_IMPACT_KEYWORDS
+    )
+    if category != "company" or scope not in {"", "公司", "其他"} or is_major_company_event:
+        return "重要"
+    return None
 
 
-def _load_recent_monitor_alerts(now: datetime) -> dict[str, float]:
-    """Load unexpired alert keys from previous monitor runs."""
+def _is_news_in_alert_window(item: dict[str, Any], now: datetime) -> bool:
+    """Keep normal alerts fresh while allowing a short late window for emergencies."""
+    published_at = item.get("datetime")
+    if not isinstance(published_at, datetime):
+        return False
+    if published_at >= now - timedelta(minutes=settings.MONITOR_NEWS_FRESH_MINUTES):
+        return True
+    return _is_black_swan_candidate(item) and published_at >= now - timedelta(
+        minutes=settings.MONITOR_NEWS_LOOKBACK_MINUTES
+    )
+
+
+def _safe_float(value: Any) -> Optional[float]:
     try:
-        with open(settings.MONITOR_STATE_FILE, "r", encoding="utf-8") as file:
-            raw_alerts = json.load(file)
-    except FileNotFoundError:
-        return {}
-    except (OSError, json.JSONDecodeError) as exc:
-        log_info(f"监控去重状态读取失败，将继续本次检查: {exc.__class__.__name__}")
-        return {}
+        return float(str(value).replace("%", "").strip())
+    except (TypeError, ValueError):
+        return None
 
-    if not isinstance(raw_alerts, dict):
-        log_info("监控去重状态格式无效，将继续本次检查")
-        return {}
 
-    cutoff = (now - MONITOR_SEEN_TTL).timestamp()
-    recent_alerts: dict[str, float] = {}
-    for key, timestamp in raw_alerts.items():
-        try:
-            parsed_timestamp = float(timestamp)
-        except (TypeError, ValueError):
+def _normalise_watchlist_codes(raw_codes: list[str]) -> list[str]:
+    """Accept six-digit A-share codes only and preserve their configured order."""
+    codes: list[str] = []
+    for raw_code in raw_codes:
+        code = str(raw_code or "").strip()
+        if not code.isdigit() or len(code) > 6:
+            log_info(f"忽略无效 WATCHLIST_CODES 条目: {code or '空'}")
             continue
-        if key and parsed_timestamp >= cutoff:
-            recent_alerts[str(key)] = parsed_timestamp
-    return recent_alerts
+        code = code.zfill(6)
+        if code not in codes:
+            codes.append(code)
+    return codes
 
 
-def _record_monitor_alerts(
-    recent_alerts: dict[str, float], items: list[dict[str, Any]], now: datetime
-) -> None:
-    """Persist delivered alert titles so later polling runs do not resend them."""
-    timestamp = now.timestamp()
-    for item in items:
-        key = _monitor_news_key(item)
-        if key:
-            recent_alerts[key] = timestamp
+def _is_a_share_trading_session(now: datetime) -> bool:
+    """Avoid treating closed-market snapshots as fresh one-minute price changes."""
+    if now.weekday() >= 5:
+        return False
+    current_time = now.time().replace(tzinfo=None)
+    return time(9, 30) <= current_time <= time(11, 30) or time(13, 0) <= current_time <= time(15, 0)
 
-    temp_file = f"{settings.MONITOR_STATE_FILE}.tmp"
+
+def _claim_and_send(
+    store: MonitorStore,
+    *,
+    alert_key: str,
+    dedup_key: str,
+    alert_type: str,
+    severity: str,
+    content: str,
+    payload: dict[str, Any],
+    now: datetime,
+    cooldown_minutes: int = 0,
+) -> bool:
+    """Send only a claimed alert and leave a failed delivery retryable."""
+    from core.runtime import _send_tg_with_summary
+
+    if not store.claim_alert(
+        alert_key=alert_key,
+        dedup_key=dedup_key,
+        alert_type=alert_type,
+        severity=severity,
+        payload=payload,
+        now=now,
+        cooldown_minutes=cooldown_minutes,
+    ):
+        return False
+
     try:
-        with open(temp_file, "w", encoding="utf-8") as file:
-            json.dump(recent_alerts, file, ensure_ascii=False, sort_keys=True)
-        os.replace(temp_file, settings.MONITOR_STATE_FILE)
-    except OSError as exc:
-        log_info(f"监控去重状态保存失败: {exc.__class__.__name__}")
-
-
-def _filter_unseen_monitor_news(
-    news: list[dict[str, Any]], recent_alerts: dict[str, float]
-) -> list[dict[str, Any]]:
-    """Keep items that have not already been delivered within the dedup window."""
-    return [
-        item
-        for item in news
-        if not (key := _monitor_news_key(item)) or key not in recent_alerts
-    ]
-
-
-def run_monitor(prompts: dict[str, str]) -> None:
-    """Run real-time monitor analysis mode."""
-    from core.formatter import (
-        _display_category,
-        _display_importance,
-        _format_market_message,
-        _format_news_time,
-        _infer_market_importance,
-        _infer_news_category,
-        _title_icon,
-    )
-    from core.runtime import (
-        _print_monitor_filter_summary,
-        _record_news_summary,
-        _send_health_status,
-        _send_tg_with_summary,
-    )
-    from core.analyzer import _get_ai_response_with_health, _has_effective_content
-
-    news = get_news(20, semantic_dedup=False, translate_external=False)
-    _record_news_summary(news)
-    input_items = len(news)
-    if not news:
-        _print_monitor_filter_summary(
-            input_items=input_items,
-            after_time_filter=0,
-            after_keyword_filter=0,
-            after_dedup=0,
-            final_alert_items=0,
-            decision="skip",
-            reason="no input news",
-        )
-        _send_health_status(
-            "新闻数据为空，无法生成监控摘要",
+        sent = _send_tg_with_summary(
+            content,
             token=settings.TG_BOT_TOKEN_MONITOR,
             chat_id=settings.TG_CHAT_ID_MONITOR,
         )
-        return
+    except Exception as exc:
+        store.mark_alert_failed(alert_key, now, exc.__class__.__name__)
+        raise
+
+    if sent:
+        store.mark_alert_sent(alert_key, now)
+        return True
+
+    store.mark_alert_failed(alert_key, now, "telegram send returned false")
+    return False
+
+
+def _build_news_alert(item: dict[str, Any], severity: str) -> str:
+    from core.formatter import _format_market_message, _format_news_time
+
+    is_urgent = severity == "紧急"
+    impact = (
+        "触发跨市场风险关键词。请优先核对权威原文与后续公告，关注风险是否持续扩散。"
+        if is_urgent
+        else "触发政策、宏观或市场级重要性规则。请结合原文确认影响范围与持续性。"
+    )
+    return _format_market_message(
+        "紧急市场提醒" if is_urgent else "重要市场提醒",
+        report_time=_format_news_time(item),
+        source=str(item.get("source") or "未知"),
+        category=str(item.get("category") or "其他"),
+        importance="高（紧急）" if is_urgent else "高",
+        summary=str(item.get("title") or "未知新闻"),
+        impact=impact,
+        links=str(item.get("link") or "未知"),
+        market_scope=str(item.get("market_scope") or "其他"),
+        related_sectors=item.get("related_sectors"),
+    )
+
+
+def _build_price_alert(
+    *,
+    code: str,
+    name: str,
+    previous: dict[str, Any],
+    current_price: float,
+    day_pct: Optional[float],
+    change_pct: float,
+    now: datetime,
+) -> str:
+    from core.formatter import _format_market_message
+
+    direction = "快速上涨" if change_pct > 0 else "快速下跌"
+    day_pct_text = f"{day_pct:+.2f}%" if day_pct is not None else "未知"
+    return _format_market_message(
+        "自选股分钟异动",
+        report_time=now.strftime("%Y-%m-%d %H:%M"),
+        source="东方财富实时行情",
+        category="行情",
+        importance="高",
+        summary=(
+            f"{name} ({code}) {direction}："
+            f"{float(previous['price']):.2f} → {current_price:.2f}，"
+            f"区间变动 {change_pct:+.2f}%；当日涨跌 {day_pct_text}。"
+        ),
+        impact=(
+            f"触发 {settings.PRICE_ALERT_MAX_COMPARISON_GAP_MINUTES} 分钟内 "
+            f"{settings.PRICE_ALERT_MINUTE_CHANGE_PCT:.2f}% 的价格异动阈值。"
+            "这只是行情变化提示，不构成交易建议。"
+        ),
+        links="未知",
+        market_scope="个股",
+        related_sectors=[name],
+    )
+
+
+def _send_monitor_health_alert(
+    store: MonitorStore, reason: str, now: datetime
+) -> bool:
+    """Report an actual data failure at a limited cadence instead of every minute."""
+    from core.formatter import _format_market_message, _format_source_health_line
+    from core.runtime import _format_health_status_message, _set_run_reason
+
+    _set_run_reason(reason, status="failed")
+    health_details = _format_health_status_message(reason, _format_source_health_line)
+    content = _format_market_message(
+        "实时监控状态",
+        report_time=now.strftime("%Y-%m-%d %H:%M"),
+        source="监控数据源",
+        category="系统",
+        importance="高",
+        summary="实时新闻抓取没有返回可用内容。",
+        impact=health_details,
+        links="未知",
+        market_scope="系统",
+    )
+    bucket = now.strftime("%Y%m%d%H") + str(now.minute // 15)
+    return _claim_and_send(
+        store,
+        alert_key=f"health:news-fetch:{bucket}",
+        dedup_key="health:news-fetch",
+        alert_type="health",
+        severity="high",
+        content=content,
+        payload={"reason": reason, "health": get_data_source_health()},
+        now=now,
+        cooldown_minutes=15,
+    )
+
+
+def _run_watchlist_monitor(store: MonitorStore, now: datetime) -> tuple[int, int]:
+    """Store minute quotes and send rate-limited alerts for large short-term moves."""
+    codes = _normalise_watchlist_codes(settings.WATCHLIST_CODES)
+    if not codes:
+        log_info("行情监控跳过：未配置 WATCHLIST_CODES")
+        return 0, 0
+    if not _is_a_share_trading_session(now):
+        log_info("行情监控跳过：当前不在 A 股常规交易时段")
+        return 0, 0
+
+    quote_count = 0
+    signal_count = 0
+    for code in codes:
+        quote = get_stock_quote(code)
+        if not quote:
+            continue
+        price = _safe_float(quote.get("price"))
+        day_pct = _safe_float(quote.get("pct"))
+        if price is None or price <= 0:
+            log_info(f"行情监控跳过无效价格: {code}")
+            continue
+
+        quote_count += 1
+        name = str(quote.get("name") or code)
+        previous = store.record_quote(
+            code=code,
+            name=name,
+            price=price,
+            pct=day_pct,
+            observed_at=now,
+            max_gap_minutes=settings.PRICE_ALERT_MAX_COMPARISON_GAP_MINUTES,
+        )
+        if not previous or float(previous["price"]) <= 0:
+            continue
+
+        change_pct = (price / float(previous["price"]) - 1) * 100
+        if abs(change_pct) < settings.PRICE_ALERT_MINUTE_CHANGE_PCT:
+            continue
+
+        direction = "up" if change_pct > 0 else "down"
+        alert_key = f"price:{code}:{now.strftime('%Y%m%d%H%M')}:{direction}"
+        if _claim_and_send(
+            store,
+            alert_key=alert_key,
+            dedup_key=f"price:{code}:{direction}",
+            alert_type="price_move",
+            severity="high",
+            content=_build_price_alert(
+                code=code,
+                name=name,
+                previous=previous,
+                current_price=price,
+                day_pct=day_pct,
+                change_pct=change_pct,
+                now=now,
+            ),
+            payload={
+                "code": code,
+                "name": name,
+                "previous": previous,
+                "current_price": price,
+                "day_pct": day_pct,
+                "change_pct": change_pct,
+            },
+            now=now,
+            cooldown_minutes=settings.PRICE_ALERT_COOLDOWN_MINUTES,
+        ):
+            signal_count += 1
+
+    return quote_count, signal_count
+
+
+def run_monitor(_prompts: dict[str, str]) -> None:
+    """Run one minute-monitor cycle for news and configured watchlist quotes."""
     now = datetime.now(settings.SHA_TZ)
-    strict_threshold = now - timedelta(minutes=5)
-    soft_threshold = now - timedelta(minutes=20)
+    store = MonitorStore(settings.MONITOR_DB_FILE)
+    store.initialize()
+    if not store.acquire_lock("monitor", now):
+        log_info("实时监控跳过：上一轮尚未结束")
+        return
 
-    fresh_news: list[dict[str, Any]] = []
+    try:
+        _run_monitor_cycle(store, now)
+    finally:
+        store.release_lock("monitor")
+
+
+def _run_monitor_cycle(store: MonitorStore, now: datetime) -> None:
+    """Process one claimed monitor cycle after the overlapping-run guard succeeds."""
+    from core.runtime import _print_monitor_filter_summary, _record_news_summary
+
+    news = get_news(
+        settings.MONITOR_NEWS_LOOKBACK_MINUTES,
+        semantic_dedup=False,
+        translate_external=False,
+    )
+    _record_news_summary(news)
+
+    input_items = len(news)
     after_time_filter = 0
+    eligible_news: list[tuple[dict[str, Any], str]] = []
+    recorded_news = 0
     for item in news:
-        if item["datetime"] >= strict_threshold:
-            after_time_filter += 1
-            fresh_news.append(item)
-        elif item["datetime"] >= soft_threshold and _is_black_swan_candidate(item):
-            fresh_news.append(item)
-
-    after_keyword_filter = len(fresh_news)
-    if not fresh_news:
-        _print_monitor_filter_summary(
-            input_items=input_items,
-            after_time_filter=after_time_filter,
-            after_keyword_filter=after_keyword_filter,
-            after_dedup=0,
-            final_alert_items=0,
-            decision="skip",
-            reason="no recent market news in time window",
-        )
-        log_info("未发现符合时间窗口的市场信息，跳过推送")
-        return
-
-    filtered_news = [item for item in fresh_news if not _is_low_value_company_news(item)]
-    filtered_company_items = len(fresh_news) - len(filtered_news)
-    if filtered_company_items:
-        log_info(f"监控过滤普通公司消息: skipped={filtered_company_items}")
-
-    if not filtered_news:
-        _print_monitor_filter_summary(
-            input_items=input_items,
-            after_time_filter=after_time_filter,
-            after_keyword_filter=0,
-            after_dedup=0,
-            final_alert_items=0,
-            decision="skip",
-            reason="only ordinary low-importance company news after filters",
-        )
-        log_info("仅发现普通低重要性公司消息，跳过推送")
-        return
-
-    black_swan_news = [
-        item for item in filtered_news if _is_black_swan_candidate(item)
-    ]
-    filtered_non_black_swan = len(filtered_news) - len(black_swan_news)
-    if filtered_non_black_swan:
-        log_info(f"黑天鹅监控过滤普通消息: skipped={filtered_non_black_swan}")
-
-    if not black_swan_news:
-        _print_monitor_filter_summary(
-            input_items=input_items,
-            after_time_filter=after_time_filter,
-            after_keyword_filter=0,
-            after_dedup=0,
-            final_alert_items=0,
-            decision="skip",
-            reason="no black-swan-level news after filters",
-        )
-        log_info("未发现黑天鹅级重大突发，跳过推送")
-        return
-
-    after_keyword_filter = len(black_swan_news)
-    dedup_news: list[dict[str, Any]] = []
-    seen_titles: set[str] = set()
-    for item in black_swan_news:
-        if item["title"] not in seen_titles:
-            seen_titles.add(item["title"])
-            dedup_news.append(item)
-
-    after_dedup = len(dedup_news)
-    recent_alerts = _load_recent_monitor_alerts(now)
-    dedup_news = _filter_unseen_monitor_news(dedup_news, recent_alerts)
-    if not dedup_news:
-        _print_monitor_filter_summary(
-            input_items=input_items,
-            after_time_filter=after_time_filter,
-            after_keyword_filter=after_keyword_filter,
-            after_dedup=after_dedup,
-            final_alert_items=0,
-            decision="skip",
-            reason="all candidate alerts were already delivered recently",
-        )
-        log_info("候选重要消息近期已推送，跳过重复提醒")
-        return
-
-    after_dedup = len(dedup_news)
-    news_titles = [
-        (
-            f"{i}. [{n.get('source', 'unknown')}] "
-            f"[分类:{_display_category(n.get('category'))} / "
-            f"重要性:{_display_importance(n.get('importance'))} / "
-            f"范围:{n.get('market_scope') or '其他'}] "
-            f"{n['title']} (详情:{n['digest'][:60]})"
-        )
-        for i, n in enumerate(dedup_news[:12])
-    ]
-    prompt = prompts.get("monitor", settings.DEFAULT_PROMPTS["monitor"]).format(
-        news_list="\n".join(news_titles)
-    )
-    content = _get_ai_response_with_health(
-        f"{prompt}\n\n【黑天鹅模式】候选已由规则筛出。只有可能导致跨市场急剧波动、"
-        "系统性风险或重大地缘冲突的事件才能输出 ALERT；日常政策、业绩、"
-        "行业消息、普通公司公告一律不输出 ALERT。"
-    )
-    if not content:
-        _print_monitor_filter_summary(
-            input_items=input_items,
-            after_time_filter=after_time_filter,
-            after_keyword_filter=after_keyword_filter,
-            after_dedup=after_dedup,
-            final_alert_items=0,
-            decision="skip",
-            reason="ai returned empty monitor summary",
-        )
-        log_info("DeepSeek 没有生成有效监控摘要，跳过推送")
-        return
-
-    alerts_buffer: list[str] = []
-    alert_items: list[dict[str, Any]] = []
-    for line in content.split("\n"):
-        if "ALERT|" not in line:
+        if store.record_news_event(item, now):
+            recorded_news += 1
+        if not _is_news_in_alert_window(item, now):
             continue
-        parts = line.split("|")
-        if len(parts) < 3:
-            continue
-        try:
-            idx = int(re.sub(r"\D", "", parts[1]))
-        except ValueError:
-            continue
-        if idx < len(dedup_news):
-            item = dedup_news[idx]
-            alert_items.append(item)
-            link = str(item.get("link") or "").strip()
-            alerts_buffer.append(
-                _format_market_message(
-                    "市场信息摘要",
-                    report_time=_format_news_time(item),
-                    source=str(item.get("source") or "未知"),
-                    category=_infer_news_category(item),
-                    importance=_infer_market_importance(item),
-                    summary=str(item.get("title") or "未知"),
-                    impact=parts[2],
-                    links=link or "未知",
-                    market_scope=str(item.get("market_scope") or "其他"),
-                    related_sectors=item.get("related_sectors"),
-                    include_title=False,
-                )
-            )
+        after_time_filter += 1
+        severity = _news_alert_severity(item)
+        if severity:
+            eligible_news.append((item, severity))
 
-    final_alert_items = len(alerts_buffer[:3])
-    if alerts_buffer:
-        msg = (
-            f"{_title_icon('市场信息摘要')} 市场信息摘要\n\n"
-            + "\n\n〰️〰️〰️\n\n".join(alerts_buffer[:3])
-        )
-        if _has_effective_content(msg):
-            _print_monitor_filter_summary(
-                input_items=input_items,
-                after_time_filter=after_time_filter,
-                after_keyword_filter=after_keyword_filter,
-                after_dedup=after_dedup,
-                final_alert_items=final_alert_items,
-                decision="send",
+    sent_news = 0
+    for item, severity in eligible_news[:3]:
+        event_key = news_event_key(item)
+        if _claim_and_send(
+            store,
+            alert_key=f"news:{event_key}",
+            dedup_key=f"news:{event_key}",
+            alert_type="news",
+            severity=severity,
+            content=_build_news_alert(item, severity),
+            payload=item,
+            now=now,
+        ):
+            sent_news += 1
+
+    health_sent = 0
+    if not news:
+        health = get_data_source_health()
+        if any(state.get("status") == "failed" for state in health.values()):
+            health_sent = int(
+                _send_monitor_health_alert(store, "新闻数据源没有返回可用内容", now)
             )
-            delivered = _send_tg_with_summary(
-                msg,
-                token=settings.TG_BOT_TOKEN_MONITOR,
-                chat_id=settings.TG_CHAT_ID_MONITOR,
-            )
-            if delivered:
-                _record_monitor_alerts(recent_alerts, alert_items[:3], now)
         else:
-            _print_monitor_filter_summary(
-                input_items=input_items,
-                after_time_filter=after_time_filter,
-                after_keyword_filter=after_keyword_filter,
-                after_dedup=after_dedup,
-                final_alert_items=final_alert_items,
-                decision="skip",
-                reason="final telegram body empty",
-            )
-            _send_health_status(
-                "最终 Telegram 正文为空",
-                token=settings.TG_BOT_TOKEN_MONITOR,
-                chat_id=settings.TG_CHAT_ID_MONITOR,
-            )
-    else:
-        _print_monitor_filter_summary(
-            input_items=input_items,
-            after_time_filter=after_time_filter,
-            after_keyword_filter=after_keyword_filter,
-            after_dedup=after_dedup,
-            final_alert_items=0,
-            decision="skip",
-            reason="ai returned no alert lines",
-        )
-        log_info("DeepSeek 未识别需提醒的市场信息，跳过推送")
+            log_info("新闻监控无新快讯，跳过推送")
+
+    quote_count, sent_price = _run_watchlist_monitor(store, now)
+    sent_total = sent_news + sent_price + health_sent
+    _print_monitor_filter_summary(
+        input_items=input_items,
+        after_time_filter=after_time_filter,
+        after_keyword_filter=len(eligible_news),
+        after_dedup=recorded_news,
+        final_alert_items=sent_total,
+        decision="send" if sent_total else "skip",
+        reason=(
+            "no new eligible news or watchlist price signal"
+            if not sent_total
+            else f"news_sent={sent_news}, quote_samples={quote_count}, price_sent={sent_price}"
+        ),
+    )

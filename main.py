@@ -30,7 +30,7 @@ REQUIRED_ENV_BY_MODE: Final[dict[str, tuple[str, ...]]] = {
     "recommend": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN", "TG_CHAT_ID"),
     "track": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN", "TG_CHAT_ID"),
     "review": ("TG_BOT_TOKEN", "TG_CHAT_ID"),
-    "monitor": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN_MONITOR", "TG_CHAT_ID_MONITOR"),
+    "monitor": ("TG_BOT_TOKEN_MONITOR", "TG_CHAT_ID_MONITOR"),
     "global": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN_MONITOR", "TG_CHAT_ID_MONITOR"),
 }
 

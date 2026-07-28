@@ -17,7 +17,7 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 PICK_FILE = os.path.join(BASE_DIR, "stock_pick.json")
 PROMPTS_FILE = os.path.join(BASE_DIR, "prompts.json")
 HISTORY_FILE = os.path.join(BASE_DIR, "history.csv")
-MONITOR_STATE_FILE = os.path.join(BASE_DIR, "monitor_seen.json")
+MONITOR_DB_FILE = os.path.join(BASE_DIR, "monitor.db")
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -42,12 +42,48 @@ def _parse_rss_url_list(raw_value):
     return [url.strip() for url in normalized.split(",") if url.strip()]
 
 
+def _env_positive_int(name, default):
+    """Read a positive integer environment setting with a safe default."""
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _env_positive_float(name, default):
+    """Read a positive float environment setting with a safe default."""
+    try:
+        value = float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
 # 额外信息源（RSS），支持多个地址，用英文逗号或中文逗号分隔。
 # 示例：https://example.com/feed.xml,https://another-site.com/rss
 CUSTOM_NEWS_RSS = _parse_rss_url_list(os.getenv("CUSTOM_NEWS_RSS", ""))
 
 # 合并后的外部信息源列表（海外 + 自定义）
 EXTERNAL_NEWS_RSS = [url for url in [GLOBAL_NEWS_RSS, *CUSTOM_NEWS_RSS] if url]
+
+# 分钟级监控配置。WATCHLIST_CODES 为空时，监控仍会运行新闻提醒，但跳过行情提醒。
+WATCHLIST_CODES = [
+    code for code in _parse_rss_url_list(os.getenv("WATCHLIST_CODES", "")) if code
+]
+MONITOR_NEWS_LOOKBACK_MINUTES = _env_positive_int(
+    "MONITOR_NEWS_LOOKBACK_MINUTES", 20
+)
+MONITOR_NEWS_FRESH_MINUTES = _env_positive_int("MONITOR_NEWS_FRESH_MINUTES", 5)
+PRICE_ALERT_MINUTE_CHANGE_PCT = _env_positive_float(
+    "PRICE_ALERT_MINUTE_CHANGE_PCT", 1.0
+)
+PRICE_ALERT_COOLDOWN_MINUTES = _env_positive_int(
+    "PRICE_ALERT_COOLDOWN_MINUTES", 15
+)
+PRICE_ALERT_MAX_COMPARISON_GAP_MINUTES = _env_positive_int(
+    "PRICE_ALERT_MAX_COMPARISON_GAP_MINUTES", 3
+)
 
 DEFAULT_PROMPTS = {
     "daily": "你是A股投资总监。现在是{report_time}，请只基于以下新闻生成《今日盘前内参》：\n{news_txt}\n\n要求：\n1. 先核对时间：重点分析{report_date}盘前/最近24小时消息，不把旧闻当新催化。\n2. 语言精简但不要过度压缩：每个栏目1-2句，说清结论、原因和影响。\n3. 情绪判断必须结合上方具体新闻，不允许空泛说乐观/谨慎。\n4. 输出格式：\n【核心主线】...\n【利好/利空】利好...；利空...\n【情绪判断】结合新闻说明市场情绪强/中性/弱及原因。\n【今日关注】1-2个最值得盯的方向。",

@@ -1,16 +1,17 @@
 import pytest
+from datetime import datetime, timedelta
 
 import main
+from config import settings
 from core.formatter import _infer_news_category
 from core.analyzers.monitor import (
-    MONITOR_SEEN_TTL,
-    _filter_unseen_monitor_news,
     _is_black_swan_candidate,
     _is_low_value_company_news,
     _is_monitor_alert_importance,
-    _load_recent_monitor_alerts,
-    _record_monitor_alerts,
+    _news_alert_severity,
+    _normalise_watchlist_codes,
 )
+from core.monitor_store import MonitorStore, news_event_key
 from utils.notifier import _split_message
 
 
@@ -25,6 +26,14 @@ def test_missing_env_should_exit(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "x")
     with pytest.raises(SystemExit):
         main._validate_required_env("daily")
+
+
+def test_monitor_does_not_require_deepseek_credentials(monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("TG_BOT_TOKEN_MONITOR", "token")
+    monkeypatch.setenv("TG_CHAT_ID_MONITOR", "chat")
+
+    main._validate_required_env("monitor")
 
 
 def test_telegram_long_message_split():
@@ -76,6 +85,34 @@ def test_monitor_only_keeps_black_swan_candidates():
     assert not _is_black_swan_candidate({"title": "行业政策支持出台", "digest": ""})
 
 
+def test_monitor_classifies_market_news_without_ai():
+    policy_item = {
+        "title": "国务院发布资本市场新政策",
+        "digest": "",
+        "category": "policy",
+        "importance": "high",
+        "market_scope": "市场",
+    }
+    ordinary_company_item = {
+        "title": "公司发布季度业绩",
+        "digest": "",
+        "category": "company",
+        "importance": "high",
+        "market_scope": "公司",
+    }
+
+    assert _news_alert_severity(policy_item) == "重要"
+    assert _news_alert_severity(ordinary_company_item) is None
+    assert _news_alert_severity({"title": "突发军事冲突升级", "digest": ""}) == "紧急"
+
+
+def test_normalise_watchlist_codes_keeps_valid_unique_codes():
+    assert _normalise_watchlist_codes(["1", "000001", "600519", "bad", ""]) == [
+        "000001",
+        "600519",
+    ]
+
+
 def test_monitor_fast_fetch_skips_ai_preprocessing(monkeypatch):
     import core.data_fetcher as data_fetcher
 
@@ -100,35 +137,185 @@ def test_monitor_fast_fetch_skips_ai_preprocessing(monkeypatch):
     ) == []
 
 
-def test_monitor_seen_state_prevents_repeated_alerts(monkeypatch, tmp_path):
-    from datetime import datetime
-    from config import settings
+def test_monitor_store_persists_news_and_alert_delivery(tmp_path):
+    store = MonitorStore(str(tmp_path / "monitor.db"))
+    store.initialize()
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=settings.SHA_TZ)
+    item = {
+        "title": "重要市场消息",
+        "digest": "测试",
+        "source": "eastmoney",
+        "link": "https://example.com/news/1",
+        "datetime": now,
+    }
 
-    monkeypatch.setattr(settings, "MONITOR_STATE_FILE", str(tmp_path / "seen.json"))
+    assert store.record_news_event(item, now) is True
+    assert store.record_news_event(item, now) is False
+    alert_key = f"news:{news_event_key(item)}"
+    assert store.claim_alert(
+        alert_key=alert_key,
+        dedup_key=alert_key,
+        alert_type="news",
+        severity="重要",
+        payload=item,
+        now=now,
+    )
+    store.mark_alert_sent(alert_key, now)
+    assert not store.claim_alert(
+        alert_key=alert_key,
+        dedup_key=alert_key,
+        alert_type="news",
+        severity="重要",
+        payload=item,
+        now=now + timedelta(minutes=1),
+    )
+
+
+def test_monitor_store_retries_failures_and_applies_price_cooldown(tmp_path):
+    store = MonitorStore(str(tmp_path / "monitor.db"))
+    store.initialize()
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=settings.SHA_TZ)
+
+    assert store.claim_alert(
+        alert_key="price:000001:one",
+        dedup_key="price:000001:up",
+        alert_type="price_move",
+        severity="high",
+        payload={},
+        now=now,
+        cooldown_minutes=15,
+    )
+    store.mark_alert_failed("price:000001:one", now, "timeout")
+    assert store.claim_alert(
+        alert_key="price:000001:one",
+        dedup_key="price:000001:up",
+        alert_type="price_move",
+        severity="high",
+        payload={},
+        now=now + timedelta(minutes=1),
+        cooldown_minutes=15,
+    )
+    store.mark_alert_sent("price:000001:one", now + timedelta(minutes=1))
+    assert not store.claim_alert(
+        alert_key="price:000001:two",
+        dedup_key="price:000001:up",
+        alert_type="price_move",
+        severity="high",
+        payload={},
+        now=now + timedelta(minutes=2),
+        cooldown_minutes=15,
+    )
+
+
+def test_monitor_store_returns_only_recent_previous_quote(tmp_path):
+    store = MonitorStore(str(tmp_path / "monitor.db"))
+    store.initialize()
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=settings.SHA_TZ)
+
+    assert (
+        store.record_quote(
+            code="000001",
+            name="测试股",
+            price=10.0,
+            pct=0.0,
+            observed_at=now,
+            max_gap_minutes=3,
+        )
+        is None
+    )
+    previous = store.record_quote(
+        code="000001",
+        name="测试股",
+        price=10.2,
+        pct=2.0,
+        observed_at=now + timedelta(minutes=1),
+        max_gap_minutes=3,
+    )
+    assert previous is not None
+    assert previous["price"] == 10.0
+    assert (
+        store.record_quote(
+            code="000001",
+            name="测试股",
+            price=10.3,
+            pct=3.0,
+            observed_at=now + timedelta(minutes=10),
+            max_gap_minutes=3,
+        )
+        is None
+    )
+
+
+def test_monitor_store_prevents_overlapping_cycles(tmp_path):
+    store = MonitorStore(str(tmp_path / "monitor.db"))
+    store.initialize()
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=settings.SHA_TZ)
+
+    assert store.acquire_lock("monitor", now)
+    assert not store.acquire_lock("monitor", now + timedelta(minutes=1))
+    store.release_lock("monitor")
+    assert store.acquire_lock("monitor", now + timedelta(minutes=1))
+
+
+def test_monitor_sends_each_important_news_event_once(monkeypatch, tmp_path):
+    import core.analyzers.monitor as monitor
+    import core.runtime as runtime
+
     now = datetime.now(settings.SHA_TZ)
-    item = {"title": "重要市场消息"}
+    item = {
+        "title": "国务院发布资本市场新政策",
+        "digest": "测试",
+        "source": "eastmoney",
+        "link": "https://example.com/news/important",
+        "datetime": now,
+        "category": "policy",
+        "importance": "high",
+        "market_scope": "市场",
+        "related_sectors": ["金融"],
+    }
+    sent_messages = []
 
-    _record_monitor_alerts({}, [item], now)
-    recent_alerts = _load_recent_monitor_alerts(now)
+    monkeypatch.setattr(settings, "MONITOR_DB_FILE", str(tmp_path / "monitor.db"))
+    monkeypatch.setattr(settings, "WATCHLIST_CODES", [])
+    monkeypatch.setattr(monitor, "get_news", lambda *args, **kwargs: [item])
+    monkeypatch.setattr(runtime, "send_tg", lambda content, **kwargs: sent_messages.append(content) or True)
+    monkeypatch.setattr(runtime, "CURRENT_RUN_SUMMARY", None)
 
-    assert _filter_unseen_monitor_news([item], recent_alerts) == []
-    assert _filter_unseen_monitor_news(
-        [{"title": "另一条重要消息"}], recent_alerts
-    ) == [{"title": "另一条重要消息"}]
+    monitor.run_monitor({})
+    monitor.run_monitor({})
+
+    assert len(sent_messages) == 1
+    assert "重要市场提醒" in sent_messages[0]
 
 
-def test_monitor_seen_state_expires_old_alerts(monkeypatch, tmp_path):
-    from datetime import datetime, timedelta
-    from config import settings
+def test_watchlist_monitor_alerts_once_then_respects_cooldown(monkeypatch, tmp_path):
+    import core.analyzers.monitor as monitor
+    import core.runtime as runtime
 
-    monkeypatch.setattr(settings, "MONITOR_STATE_FILE", str(tmp_path / "seen.json"))
-    now = datetime.now(settings.SHA_TZ)
-    item = {"title": "过期消息"}
-    old_time = now - MONITOR_SEEN_TTL - timedelta(seconds=1)
+    store = MonitorStore(str(tmp_path / "monitor.db"))
+    store.initialize()
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=settings.SHA_TZ)
+    quotes = iter(
+        [
+            {"name": "测试股", "price": "10.00", "pct": "0.00"},
+            {"name": "测试股", "price": "10.20", "pct": "2.00"},
+            {"name": "测试股", "price": "10.30", "pct": "3.00"},
+        ]
+    )
+    sent_messages = []
 
-    _record_monitor_alerts({}, [item], old_time)
+    monkeypatch.setattr(settings, "WATCHLIST_CODES", ["000001"])
+    monkeypatch.setattr(settings, "PRICE_ALERT_MINUTE_CHANGE_PCT", 1.0)
+    monkeypatch.setattr(settings, "PRICE_ALERT_COOLDOWN_MINUTES", 15)
+    monkeypatch.setattr(monitor, "get_stock_quote", lambda code: next(quotes))
+    monkeypatch.setattr(runtime, "send_tg", lambda content, **kwargs: sent_messages.append(content) or True)
+    monkeypatch.setattr(runtime, "CURRENT_RUN_SUMMARY", None)
 
-    assert _load_recent_monitor_alerts(now) == {}
+    assert monitor._run_watchlist_monitor(store, now) == (1, 0)
+    assert monitor._run_watchlist_monitor(store, now + timedelta(minutes=1)) == (1, 1)
+    assert monitor._run_watchlist_monitor(store, now + timedelta(minutes=2)) == (1, 0)
+    assert len(sent_messages) == 1
+    assert "自选股分钟异动" in sent_messages[0]
 
 
 def test_validate_pick_rejects_candidate_not_in_list():
