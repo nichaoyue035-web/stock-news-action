@@ -26,7 +26,7 @@ SUPPORTED_ANALYSIS_MODES: Final[set[str]] = {
 
 REQUIRED_ENV_BY_MODE: Final[dict[str, tuple[str, ...]]] = {
     "daily": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN", "TG_CHAT_ID"),
-    "funds": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN_FUNDS", "TG_CHAT_ID_FUNDS"),
+    "funds": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN", "TG_CHAT_ID"),
     "periodic": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN", "TG_CHAT_ID"),
     "after_market": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN", "TG_CHAT_ID"),
     "recommend": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN", "TG_CHAT_ID"),

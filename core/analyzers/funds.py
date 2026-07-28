@@ -30,11 +30,7 @@ def run_funds(prompts: dict[str, str]) -> None:
     top_in, top_out = get_market_funds()
     _record_fetch_success(bool(top_in))
     if not top_in:
-        _send_health_status(
-            "资金流数据为空，无法生成资金流摘要",
-            token=settings.TG_BOT_TOKEN_FUNDS,
-            chat_id=settings.TG_CHAT_ID_FUNDS,
-        )
+        _send_health_status("资金流数据为空，无法生成资金流摘要")
         return
     in_str = "\n".join(
         [f"- {s['name']}: {s['flow']}亿 ({s['change']})" for s in top_in]
@@ -70,14 +66,6 @@ def run_funds(prompts: dict[str, str]) -> None:
             market_scope="行业",
             related_sectors=[s["name"] for s in top_in[:3]],
         )
-        _send_tg_with_summary(
-            message,
-            token=settings.TG_BOT_TOKEN_FUNDS,
-            chat_id=settings.TG_CHAT_ID_FUNDS,
-        )
+        _send_tg_with_summary(message)
     else:
-        _send_health_status(
-            "DeepSeek 没有生成有效摘要",
-            token=settings.TG_BOT_TOKEN_FUNDS,
-            chat_id=settings.TG_CHAT_ID_FUNDS,
-        )
+        _send_health_status("DeepSeek 没有生成有效摘要")

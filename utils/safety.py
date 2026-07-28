@@ -14,8 +14,6 @@ def redact_sensitive_text(text: Any, max_length: int = 160) -> str:
         settings.TG_CHAT_ID,
         settings.TG_BOT_TOKEN_MONITOR,
         settings.TG_CHAT_ID_MONITOR,
-        settings.TG_BOT_TOKEN_FUNDS,
-        settings.TG_CHAT_ID_FUNDS,
     ):
         if secret:
             safe_text = safe_text.replace(str(secret), "<redacted>")
