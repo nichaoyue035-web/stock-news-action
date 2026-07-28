@@ -36,6 +36,20 @@ def test_monitor_does_not_require_deepseek_credentials(monkeypatch):
     main._validate_required_env("monitor")
 
 
+def test_runtime_summary_writes_configured_status_file(monkeypatch, tmp_path):
+    import core.runtime as runtime
+
+    status_file = tmp_path / "runtime_status.json"
+    monkeypatch.setattr(settings, "RUN_STATUS_FILE", str(status_file))
+    monkeypatch.setattr(runtime, "CURRENT_RUN_SUMMARY", None)
+    runtime._start_run_summary("monitor")
+    runtime._set_run_summary(data_fetch_success=True)
+    runtime._print_run_summary()
+
+    assert status_file.is_file()
+    assert '"mode": "monitor"' in status_file.read_text(encoding="utf-8")
+
+
 def test_telegram_long_message_split():
     content = "A" * 8000
     chunks = list(_split_message(content, max_length=3900))
@@ -112,7 +126,15 @@ def test_monitor_classifies_market_news_without_ai():
 
     assert _news_alert_severity(policy_item) == "重要"
     assert _news_alert_severity(ordinary_company_item) is None
-    assert _news_alert_severity({"title": "突发军事冲突升级", "digest": ""}) == "紧急"
+    assert _news_alert_severity(
+        {
+            "title": "突发军事冲突升级",
+            "digest": "",
+            "source": "eastmoney",
+            "link": "https://eastmoney.com/news/1",
+            "importance": "high",
+        }
+    ) == "紧急"
 
 
 def test_normalise_watchlist_codes_keeps_valid_unique_codes():
