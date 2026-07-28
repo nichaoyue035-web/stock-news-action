@@ -15,22 +15,35 @@ from utils.notifier import log_info
 SMALL_COMPANY_NEWS_CATEGORIES = {"company"}
 SMALL_COMPANY_NEWS_IMPORTANCE = {"low"}
 MONITOR_ALLOWED_IMPORTANCE = {"high", "高", "偏高"}
-BLACK_SWAN_KEYWORDS = (
-    "战争",
-    "开战",
-    "军事冲突",
+BLACK_SWAN_EVENT_KEYWORDS = (
+    "战争爆发",
+    "宣布开战",
+    "正式开战",
+    "军事冲突升级",
+    "爆发军事冲突",
     "导弹袭击",
+    "导弹打击",
     "空袭",
-    "封锁",
+    "军事打击",
+    "航道封锁",
+    "海峡封锁",
+    "全面封锁",
+    "航道中断",
+    "油气供应中断",
     "恐怖袭击",
     "政变",
+    "戒严",
     "紧急状态",
     "核泄漏",
-    "核设施",
+    "核事故",
+    "核设施遇袭",
+    "核设施受袭",
+    "核设施遭袭",
     "金融危机",
     "流动性危机",
     "银行挤兑",
     "银行倒闭",
+    "银行接管",
     "主权违约",
     "债务违约",
     "市场熔断",
@@ -39,28 +52,67 @@ BLACK_SWAN_KEYWORDS = (
     "闪崩",
     "交易所宕机",
     "交易中断",
-    "重大地震",
+    "交易所暂停交易",
+    "证券交易暂停",
+    "强震",
     "海啸",
     "大规模疫情",
-    "war",
+    "网络攻击",
+    "网络袭击",
+    "勒索软件",
+    "支付系统故障",
+    "支付系统中断",
+    "清算系统故障",
+    "大面积停电",
+    "电网故障",
+    "制裁升级",
+    "全面制裁",
+    "禁运",
+    "出口管制",
+    "资本管制",
+    "汇率崩盘",
+    "汇率暴跌",
+    "外汇管制",
+    "war breaks out",
+    "declared war",
     "military strike",
-    "missile",
+    "missile strike",
     "airstrike",
     "blockade",
     "terror attack",
     "coup",
-    "nuclear",
+    "martial law",
+    "state of emergency",
+    "nuclear leak",
+    "nuclear accident",
+    "nuclear facility attack",
     "financial crisis",
     "liquidity crisis",
     "bank run",
     "bank collapse",
+    "bank resolution",
     "sovereign default",
+    "debt default",
     "market crash",
     "circuit breaker",
     "exchange outage",
-    "earthquake",
+    "trading halt",
+    "major earthquake",
+    "powerful earthquake",
     "tsunami",
     "pandemic",
+    "cyberattack",
+    "ransomware attack",
+    "payment system outage",
+    "clearing system outage",
+    "grid outage",
+    "sanctions escalation",
+    "trade embargo",
+    "export controls",
+    "capital controls",
+    "currency crash",
+    "shipping lane disruption",
+    "oil supply disruption",
 )
 BLACK_SWAN_STRONG_PHRASES = (
     "正式开战",
@@ -71,10 +123,19 @@ BLACK_SWAN_STRONG_PHRASES = (
     "发生海啸",
     "宣布破产",
     "主权违约",
+    "核事故",
+    "核泄漏",
+    "支付系统中断",
+    "清算系统故障",
+    "全面制裁",
+    "资本管制",
     "bank run",
     "declared war",
     "state of emergency",
     "circuit breaker triggered",
+    "nuclear accident",
+    "payment system outage",
+    "capital controls",
 )
 BLACK_SWAN_CONTEXT_EXCLUSIONS = (
     "历史回顾",
@@ -85,18 +146,54 @@ BLACK_SWAN_CONTEXT_EXCLUSIONS = (
     "电视剧",
     "游戏",
     "小说",
+    "假设",
+    "虚构",
+    "historical review",
+    "anniversary",
+    "military drill",
+    "military exercise",
+    "simulation",
+    "simulated",
+    "movie",
+    "film",
+    "television",
+    "tv series",
+    "game",
+    "novel",
+    "fictional",
+    "hypothetical",
+)
+BLACK_SWAN_UNVERIFIED_TERMS = (
     "未经证实",
     "网传",
+    "传闻",
+    "尚未证实",
+    "unconfirmed",
+    "unverified",
+    "rumor",
 )
-TRUSTED_URGENT_SOURCE_MARKERS = (
+TRUSTED_URGENT_SOURCE_NAMES = (
     "eastmoney",
     "reuters",
-    "apnews",
-    "bbc.",
+    "associated press",
+    "ap",
+    "bbc",
+    "financial times",
+    "ft",
+    "wall street journal",
+    "wsj",
+    "bloomberg",
+)
+TRUSTED_URGENT_SOURCE_HOSTS = (
+    "eastmoney.com",
+    "reuters.com",
+    "reutersagency.com",
+    "apnews.com",
+    "bbc.com",
+    "bbc.co.uk",
     "ft.com",
     "wsj.com",
-    "bloomberg",
-    "gov.",
+    "bloomberg.com",
 )
 SMALL_COMPANY_NEWS_HIGH_IMPACT_KEYWORDS = (
     "停牌",
@@ -118,29 +215,67 @@ def _is_monitor_alert_importance(item: dict[str, Any]) -> bool:
     return importance in MONITOR_ALLOWED_IMPORTANCE
 
 
-def _is_black_swan_candidate(item: dict[str, Any]) -> bool:
-    """Score source, wording and context before urgent AI review."""
-    text = f"{item.get('title', '')} {item.get('digest', '')}".lower()
-    if not any(keyword.lower() in text for keyword in BLACK_SWAN_KEYWORDS):
-        return False
+def _contains_risk_term(text: str, terms: tuple[str, ...]) -> bool:
+    return any(term.lower() in text for term in terms)
 
+
+def _is_unverified_black_swan(item: dict[str, Any]) -> bool:
+    text = f"{item.get('title', '')} {item.get('digest', '')}".lower()
+    return _contains_risk_term(text, BLACK_SWAN_UNVERIFIED_TERMS)
+
+
+def _has_excluded_black_swan_context(item: dict[str, Any]) -> bool:
+    text = f"{item.get('title', '')} {item.get('digest', '')}".lower()
+    return _contains_risk_term(text, BLACK_SWAN_CONTEXT_EXCLUSIONS)
+
+
+def _black_swan_score(item: dict[str, Any]) -> int:
+    """Score severity evidence after event and context checks have passed."""
+    text = f"{item.get('title', '')} {item.get('digest', '')}".lower()
     score = 2
-    if any(phrase.lower() in text for phrase in BLACK_SWAN_STRONG_PHRASES):
+    if _contains_risk_term(text, BLACK_SWAN_STRONG_PHRASES):
         score += 2
     if _is_trusted_urgent_source(item):
         score += 1
     if _is_monitor_alert_importance(item):
         score += 1
-    if any(term.lower() in text for term in BLACK_SWAN_CONTEXT_EXCLUSIONS):
-        score -= 2
+    return score
+
+
+def _is_black_swan_candidate(item: dict[str, Any]) -> bool:
+    """Require a concrete event, then score source and evidence conservatively."""
+    text = f"{item.get('title', '')} {item.get('digest', '')}".lower()
+    if not _contains_risk_term(text, BLACK_SWAN_EVENT_KEYWORDS):
+        return False
+    if _has_excluded_black_swan_context(item):
+        return False
+
+    score = _black_swan_score(item)
+    if _is_unverified_black_swan(item):
+        return _is_trusted_urgent_source(item) and score >= 4
     return score >= 3
 
 
 def _is_trusted_urgent_source(item: dict[str, Any]) -> bool:
-    source = str(item.get("source") or "").lower()
+    source = str(item.get("source") or "").strip().lower()
     host = urlparse(str(item.get("link") or "")).netloc.lower()
-    combined = f"{source} {host}"
-    return any(marker in combined for marker in TRUSTED_URGENT_SOURCE_MARKERS)
+    if source in TRUSTED_URGENT_SOURCE_NAMES:
+        return True
+    if host.endswith((".gov", ".gov.cn", ".gov.uk")):
+        return True
+    return any(
+        host == trusted_host or host.endswith(f".{trusted_host}")
+        for trusted_host in TRUSTED_URGENT_SOURCE_HOSTS
+    )
+
+
+def _black_swan_alert_severity(item: dict[str, Any]) -> Optional[str]:
+    """Classify confirmed events as urgent and unverified ones as cautionary."""
+    if not _is_black_swan_candidate(item):
+        return None
+    if _is_unverified_black_swan(item) or not _is_trusted_urgent_source(item):
+        return "待核实"
+    return "紧急"
 
 
 def _is_low_value_company_news(item: dict[str, Any]) -> bool:
@@ -162,8 +297,9 @@ def _is_low_value_company_news(item: dict[str, Any]) -> bool:
 
 def _news_alert_severity(item: dict[str, Any]) -> Optional[str]:
     """Classify only high-value news for deterministic, low-latency delivery."""
-    if _is_black_swan_candidate(item):
-        return "紧急"
+    black_swan_severity = _black_swan_alert_severity(item)
+    if black_swan_severity:
+        return black_swan_severity
     if _is_low_value_company_news(item) or not _is_monitor_alert_importance(item):
         return None
 
@@ -267,17 +403,25 @@ def _build_news_alert(item: dict[str, Any], severity: str) -> str:
     from core.formatter import _format_market_message, _format_news_time
 
     is_urgent = severity == "紧急"
-    impact = (
-        "触发跨市场风险关键词。请优先核对权威原文与后续公告，关注风险是否持续扩散。"
-        if is_urgent
-        else "触发政策、宏观或市场级重要性规则。请结合原文确认影响范围与持续性。"
-    )
+    is_unverified = severity == "待核实"
+    if is_urgent:
+        title = "紧急市场提醒"
+        importance = "高（紧急）"
+        impact = "触发跨市场风险事件规则。请优先核对权威原文与后续公告，关注风险是否持续扩散。"
+    elif is_unverified:
+        title = "待核实风险提示"
+        importance = "中（待核实）"
+        impact = "涉及重大风险事件，但尚未获得充分可信确认。请以权威原文和后续公告为准，不应据此直接决策。"
+    else:
+        title = "重要市场提醒"
+        importance = "高"
+        impact = "触发政策、宏观或市场级重要性规则。请结合原文确认影响范围与持续性。"
     return _format_market_message(
-        "紧急市场提醒" if is_urgent else "重要市场提醒",
+        title,
         report_time=_format_news_time(item),
         source=str(item.get("source") or "未知"),
         category=str(item.get("category") or "其他"),
-        importance="高（紧急）" if is_urgent else "高",
+        importance=importance,
         summary=str(item.get("title") or "未知新闻"),
         impact=impact,
         links=str(item.get("link") or "未知"),
@@ -469,7 +613,9 @@ def _run_monitor_cycle(store: MonitorStore, now: datetime) -> None:
             eligible_news.append((item, severity))
 
     sent_news = 0
-    for item, severity in eligible_news[:3]:
+    for item, severity in eligible_news:
+        if sent_news >= 3:
+            break
         event_key = news_event_key(item)
         if _claim_and_send(
             store,

@@ -7,6 +7,7 @@ import main
 from config import settings
 from core.formatter import _infer_news_category
 from core.analyzers.monitor import (
+    _black_swan_alert_severity,
     _is_black_swan_candidate,
     _is_low_value_company_news,
     _is_monitor_alert_importance,
@@ -192,6 +193,63 @@ def test_monitor_only_keeps_black_swan_candidates():
     )
     assert not _is_black_swan_candidate({"title": "公司发布季度业绩", "digest": ""})
     assert not _is_black_swan_candidate({"title": "行业政策支持出台", "digest": ""})
+
+
+def test_monitor_rejects_generic_or_historical_black_swan_terms():
+    trusted = {
+        "source": "reuters",
+        "link": "https://www.reuters.com/world/example",
+        "importance": "high",
+    }
+
+    assert not _is_black_swan_candidate(
+        {"title": "核能行业扩张计划", "digest": "", **trusted}
+    )
+    assert not _is_black_swan_candidate(
+        {"title": "核设施扩建项目启动", "digest": "", **trusted}
+    )
+    assert not _is_black_swan_candidate(
+        {"title": "Anniversary of declared war", "digest": "", **trusted}
+    )
+    assert not _is_black_swan_candidate(
+        {"title": "军事演习模拟导弹袭击", "digest": "", **trusted}
+    )
+
+
+def test_monitor_marks_trusted_unverified_event_for_verification():
+    item = {
+        "title": "网传某国宣布进入紧急状态",
+        "digest": "",
+        "source": "reuters",
+        "link": "https://www.reuters.com/world/example",
+        "importance": "high",
+    }
+
+    assert _black_swan_alert_severity(item) == "待核实"
+
+
+def test_monitor_marks_untrusted_event_for_verification():
+    item = {
+        "title": "突发军事冲突升级",
+        "digest": "",
+        "source": "custom-feed",
+        "link": "https://example.com/news/1",
+        "importance": "high",
+    }
+
+    assert _black_swan_alert_severity(item) == "待核实"
+
+
+def test_monitor_keeps_specific_cyber_event_from_trusted_source():
+    item = {
+        "title": "Payment system outage disrupts market settlement",
+        "digest": "",
+        "source": "reuters",
+        "link": "https://www.reuters.com/world/example",
+        "importance": "high",
+    }
+
+    assert _black_swan_alert_severity(item) == "紧急"
 
 
 def test_monitor_classifies_market_news_without_ai():
@@ -403,6 +461,44 @@ def test_monitor_sends_each_important_news_event_once(monkeypatch, tmp_path):
 
     assert len(sent_messages) == 1
     assert "重要市场提醒" in sent_messages[0]
+
+
+def test_monitor_sends_unsent_news_after_per_cycle_limit(monkeypatch, tmp_path):
+    import core.analyzers.monitor as monitor
+    import core.runtime as runtime
+
+    now = datetime.now(settings.SHA_TZ)
+    items = [
+        {
+            "title": f"国务院发布资本市场新政策 {index}",
+            "digest": "测试",
+            "source": "eastmoney",
+            "link": f"https://example.com/news/{index}",
+            "datetime": now,
+            "category": "policy",
+            "importance": "high",
+            "market_scope": "市场",
+            "related_sectors": ["金融"],
+        }
+        for index in range(4)
+    ]
+    sent_messages = []
+
+    monkeypatch.setattr(settings, "MONITOR_DB_FILE", str(tmp_path / "monitor.db"))
+    monkeypatch.setattr(settings, "WATCHLIST_CODES", [])
+    monkeypatch.setattr(monitor, "get_news", lambda *args, **kwargs: items)
+    monkeypatch.setattr(
+        runtime,
+        "send_tg",
+        lambda content, **kwargs: sent_messages.append(content) or True,
+    )
+    monkeypatch.setattr(runtime, "CURRENT_RUN_SUMMARY", None)
+
+    monitor.run_monitor({})
+    assert len(sent_messages) == 3
+    monitor.run_monitor({})
+
+    assert len(sent_messages) == 4
 
 
 def test_watchlist_monitor_alerts_once_then_respects_cooldown(monkeypatch, tmp_path):
