@@ -8,6 +8,7 @@ from config import settings
 from core.formatter import _infer_news_category
 from core.analyzers.monitor import (
     _black_swan_alert_severity,
+    _build_news_alert,
     _is_black_swan_candidate,
     _is_low_value_company_news,
     _is_monitor_alert_importance,
@@ -250,6 +251,67 @@ def test_monitor_keeps_specific_cyber_event_from_trusted_source():
     }
 
     assert _black_swan_alert_severity(item) == "紧急"
+
+
+def test_urgent_news_alert_includes_structured_market_impact():
+    item = {
+        "title": "突发导弹袭击升级",
+        "digest": "",
+        "source": "reuters",
+        "link": "https://www.reuters.com/world/example",
+        "datetime": datetime.now(settings.SHA_TZ),
+        "category": "overseas",
+        "importance": "high",
+        "market_scope": "全球",
+        "related_sectors": ["军工", "资源"],
+    }
+
+    content = _build_news_alert(item, "紧急")
+
+    assert "【确认度】" in content
+    assert "【传导路径】" in content
+    assert "【A股映射】" in content
+    assert "【后续验证】" in content
+    assert "石油石化" in content
+
+
+def test_unverified_news_alert_explains_verification_without_sector_call():
+    item = {
+        "title": "网传某国宣布进入紧急状态",
+        "digest": "",
+        "source": "reuters",
+        "link": "https://www.reuters.com/world/example",
+        "datetime": datetime.now(settings.SHA_TZ),
+        "category": "overseas",
+        "importance": "high",
+        "market_scope": "全球",
+        "related_sectors": [],
+    }
+
+    content = _build_news_alert(item, "待核实")
+
+    assert "风险线索" in content
+    assert "【后续验证】" in content
+    assert "【A股映射】" not in content
+
+
+def test_important_news_alert_uses_related_sectors_for_market_mapping():
+    item = {
+        "title": "国务院发布资本市场新政策",
+        "digest": "",
+        "source": "eastmoney",
+        "link": "https://example.com/news/important",
+        "datetime": datetime.now(settings.SHA_TZ),
+        "category": "policy",
+        "importance": "high",
+        "market_scope": "市场",
+        "related_sectors": ["金融"],
+    }
+
+    content = _build_news_alert(item, "重要")
+
+    assert "政策或宏观变化" in content
+    assert "优先观察金融" in content
 
 
 def test_monitor_classifies_market_news_without_ai():
