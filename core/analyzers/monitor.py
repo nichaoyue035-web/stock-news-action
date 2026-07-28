@@ -207,6 +207,113 @@ SMALL_COMPANY_NEWS_HIGH_IMPACT_KEYWORDS = (
     "控制权",
     "暴雷",
 )
+MILITARY_RISK_TERMS = (
+    "战争爆发",
+    "宣布开战",
+    "正式开战",
+    "军事冲突升级",
+    "爆发军事冲突",
+    "导弹袭击",
+    "导弹打击",
+    "空袭",
+    "军事打击",
+    "航道封锁",
+    "海峡封锁",
+    "全面封锁",
+    "恐怖袭击",
+    "政变",
+    "戒严",
+    "war breaks out",
+    "declared war",
+    "military strike",
+    "missile strike",
+    "airstrike",
+    "blockade",
+    "terror attack",
+    "coup",
+    "martial law",
+)
+MARKET_INFRASTRUCTURE_RISK_TERMS = (
+    "交易所宕机",
+    "交易中断",
+    "交易所暂停交易",
+    "证券交易暂停",
+    "网络攻击",
+    "网络袭击",
+    "勒索软件",
+    "支付系统故障",
+    "支付系统中断",
+    "清算系统故障",
+    "大面积停电",
+    "电网故障",
+    "exchange outage",
+    "trading halt",
+    "cyberattack",
+    "ransomware attack",
+    "payment system outage",
+    "clearing system outage",
+    "grid outage",
+)
+FINANCIAL_RISK_TERMS = (
+    "金融危机",
+    "流动性危机",
+    "银行挤兑",
+    "银行倒闭",
+    "银行接管",
+    "主权违约",
+    "债务违约",
+    "市场熔断",
+    "交易熔断",
+    "股灾",
+    "闪崩",
+    "financial crisis",
+    "liquidity crisis",
+    "bank run",
+    "bank collapse",
+    "bank resolution",
+    "sovereign default",
+    "debt default",
+    "market crash",
+    "circuit breaker",
+)
+SANCTIONS_RISK_TERMS = (
+    "制裁升级",
+    "全面制裁",
+    "禁运",
+    "出口管制",
+    "资本管制",
+    "汇率崩盘",
+    "汇率暴跌",
+    "外汇管制",
+    "sanctions escalation",
+    "trade embargo",
+    "export controls",
+    "capital controls",
+    "currency crash",
+)
+ENERGY_SUPPLY_RISK_TERMS = (
+    "航道中断",
+    "油气供应中断",
+    "shipping lane disruption",
+    "oil supply disruption",
+)
+NATURAL_DISASTER_RISK_TERMS = (
+    "核泄漏",
+    "核事故",
+    "核设施遇袭",
+    "核设施受袭",
+    "核设施遭袭",
+    "强震",
+    "海啸",
+    "大规模疫情",
+    "nuclear leak",
+    "nuclear accident",
+    "nuclear facility attack",
+    "major earthquake",
+    "powerful earthquake",
+    "tsunami",
+    "pandemic",
+)
 
 
 def _is_monitor_alert_importance(item: dict[str, Any]) -> bool:
@@ -407,15 +514,15 @@ def _build_news_alert(item: dict[str, Any], severity: str) -> str:
     if is_urgent:
         title = "紧急市场提醒"
         importance = "高（紧急）"
-        impact = "触发跨市场风险事件规则。请优先核对权威原文与后续公告，关注风险是否持续扩散。"
+        impact = _build_monitor_impact(item, severity)
     elif is_unverified:
         title = "待核实风险提示"
         importance = "中（待核实）"
-        impact = "涉及重大风险事件，但尚未获得充分可信确认。请以权威原文和后续公告为准，不应据此直接决策。"
+        impact = _build_monitor_impact(item, severity)
     else:
         title = "重要市场提醒"
         importance = "高"
-        impact = "触发政策、宏观或市场级重要性规则。请结合原文确认影响范围与持续性。"
+        impact = _build_monitor_impact(item, severity)
     return _format_market_message(
         title,
         report_time=_format_news_time(item),
@@ -427,6 +534,103 @@ def _build_news_alert(item: dict[str, Any], severity: str) -> str:
         links=str(item.get("link") or "未知"),
         market_scope=str(item.get("market_scope") or "其他"),
         related_sectors=item.get("related_sectors"),
+    )
+
+
+def _related_sector_text(item: dict[str, Any]) -> str:
+    related_sectors = item.get("related_sectors")
+    if not isinstance(related_sectors, list):
+        return "相关板块"
+    names = [str(sector).strip() for sector in related_sectors if str(sector).strip()]
+    return "、".join(names[:4]) if names else "相关板块"
+
+
+def _black_swan_impact_profile(text: str) -> tuple[str, str, str]:
+    """Return deterministic transmission, A-share mapping, and validation points."""
+    if _contains_risk_term(text, MILITARY_RISK_TERMS):
+        return (
+            "冲突若扩大，通常会先通过原油、航运保险和避险情绪传导，抬升跨市场风险偏好波动。",
+            "可观察石油石化、黄金、军工和航运的相对反应，并留意高估值成长与出境链的风险偏好变化。",
+            "核对冲突范围、关键航道是否受阻，以及主要产油国和国际组织的正式表态。",
+        )
+    if _contains_risk_term(text, MARKET_INFRASTRUCTURE_RISK_TERMS):
+        return (
+            "交易、支付或清算链路受扰会先影响市场流动性和风险定价，若持续可能放大跨市场波动。",
+            "可观察金融 IT、网络安全和支付清算相关方向，同时关注金融与高换手板块是否出现流动性压力。",
+            "核对故障覆盖范围、服务恢复时间、监管公告及是否存在清算或交易限制。",
+        )
+    if _contains_risk_term(text, FINANCIAL_RISK_TERMS):
+        return (
+            "风险会通过信用利差、融资成本和去杠杆预期传导，先压制整体风险偏好并关注流动性。",
+            "可观察银行、券商、地产和高杠杆行业的风险反应；黄金、红利等防御方向是否走强需结合行情确认。",
+            "核对受影响机构、流动性支持措施、信用利差和主要市场是否出现持续异常。",
+        )
+    if _contains_risk_term(text, SANCTIONS_RISK_TERMS):
+        return (
+            "影响通常经供应链可得性、出口收入、进口成本和汇率预期传导，具体强度取决于限制范围。",
+            "可观察半导体与出口链、航运物流、能源及战略资源方向；不同行业的影响取决于豁免和替代来源。",
+            "核对制裁对象、生效日期、豁免条款、对手方回应及企业公告，而非只依据标题判断。",
+        )
+    if _contains_risk_term(text, ENERGY_SUPPLY_RISK_TERMS):
+        return (
+            "航道或油气供应受扰可能推升运价、保险和能源成本，并通过通胀预期影响风险资产。",
+            "可观察油气、航运与资源品的相对反应，同时留意化工、航空和运输等成本敏感行业。",
+            "核对实际中断时长、库存与替代运力，以及油价和运价是否同步出现持续变化。",
+        )
+    if _contains_risk_term(text, NATURAL_DISASTER_RISK_TERMS):
+        return (
+            "灾害或核安全事件会通过停产、基础设施受损和避险情绪传导，影响取决于地点与持续时间。",
+            "可观察受损地区产业链、应急保障及资源品反应；板块映射须以实际受损范围和官方统计为准。",
+            "核对官方伤损和停产数据、基础设施恢复进度，以及是否涉及关键产能或运输节点。",
+        )
+    return (
+        "该事件可能先影响跨市场风险偏好和资金定价，后续强度取决于事实确认与政策响应。",
+        "可结合已识别的相关板块与当日资金、价格表现观察，避免仅凭单条消息推断市场方向。",
+        "优先核对权威原文、后续公告和跨市场价格是否出现同向确认。",
+    )
+
+
+def _build_monitor_impact(item: dict[str, Any], severity: str) -> str:
+    """Build a fast, fact-separated impact explanation without AI latency."""
+    text = f"{item.get('title', '')} {item.get('digest', '')}".lower()
+    if severity == "待核实":
+        return "\n".join(
+            (
+                "结构化推演如下：",
+                "【确认度】该事件尚未获得充分可信确认，仅作为风险线索，不作为已发生事实。",
+                "【传导路径】若后续证实，可能通过风险偏好、流动性或供应链预期影响市场。",
+                "【后续验证】优先等待权威来源、监管或相关机构的第二次确认，并核对是否有跨市场价格响应。",
+            )
+        )
+
+    if severity == "紧急":
+        transmission, mapping, verification = _black_swan_impact_profile(text)
+        return "\n".join(
+            (
+                "结构化推演如下：",
+                "【确认度】已达到紧急事件、来源和重要性阈值；仍应以权威原文与后续公告为准。",
+                f"【传导路径】{transmission}",
+                f"【A股映射】{mapping}",
+                f"【后续验证】{verification}",
+            )
+        )
+
+    category = str(item.get("category") or "其他")
+    sectors = _related_sector_text(item)
+    if category in {"policy", "macro"}:
+        transmission = "政策或宏观变化通常先影响预期、利率与风险偏好，再传导至估值和资金配置。"
+    elif category in {"capital_flow", "market_sentiment"}:
+        transmission = "资金与情绪变化会先反映在成交、估值和风险偏好，需避免把短时波动当作趋势。"
+    else:
+        transmission = "影响需要结合事件覆盖范围、产业链位置与资金反应判断，单条新闻不足以确认持续性。"
+    return "\n".join(
+        (
+            "结构化推演如下：",
+            "【确认度】该消息达到重要性阈值，但影响范围仍需由后续信息验证。",
+            f"【传导路径】{transmission}",
+            f"【A股映射】优先观察{sectors}与上下游的价格、成交和资金是否同步确认。",
+            "【后续验证】核对正式文件、数据口径和相关公司公告，并观察次轮新闻是否补充关键细节。",
+        )
     )
 
 
