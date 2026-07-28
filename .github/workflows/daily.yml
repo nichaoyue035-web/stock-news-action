@@ -1,9 +1,14 @@
 name: Stock News Bot
 
 on:
-  # schedule:
-  #   - cron: '30 0 * * 1-5'  <-- 已注释，交由 Google Scheduler 触发
   workflow_dispatch:
+    inputs:
+      run_source:
+        description: "Set to manual_vps_fallback to run this retired GitHub workflow intentionally."
+        required: true
+        type: choice
+        options:
+          - manual_vps_fallback
 
 permissions:
   contents: write  # ⚠️ 必须开启写入权限，否则无法保存选股结果
@@ -14,6 +19,9 @@ concurrency:
 
 jobs:
   run-bot:
+    # The VPS now owns the production schedule. A legacy external trigger has no
+    # input value, so it creates no job and sends no duplicate notification.
+    if: inputs.run_source == 'manual_vps_fallback'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

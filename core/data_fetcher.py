@@ -749,10 +749,17 @@ def _deduplicate_semantic_news(
     return [news_items[idx] for idx in keep_indexes]
 
 
-def get_news(minutes_lookback: Optional[int] = None) -> list[dict[str, Any]]:
+def get_news(
+    minutes_lookback: Optional[int] = None,
+    *,
+    semantic_dedup: bool = True,
+    translate_external: bool = True,
+) -> list[dict[str, Any]]:
     """
     抓取财经快讯。
     :param minutes_lookback: 回溯多少分钟内的新闻，None 表示 24 小时。
+    :param semantic_dedup: 是否调用 AI 进行跨来源语义去重。
+    :param translate_external: 是否调用 AI 翻译外部 RSS 新闻。
     """
     timestamp = int(time.time() * 1000)
     url = f"{settings.URL_NEWS}?_={timestamp}"
@@ -825,11 +832,17 @@ def get_news(minutes_lookback: Optional[int] = None) -> list[dict[str, Any]]:
             )
 
         external_news = _fetch_external_rss_news(minutes_lookback)
-        normalized_external_news = _normalize_external_news(external_news)
+        normalized_external_news = (
+            _normalize_external_news(external_news)
+            if translate_external
+            else external_news
+        )
 
         merged_news = valid_news + normalized_external_news
         merged_news.sort(key=lambda x: x["datetime"], reverse=True)
-        refined_news = _deduplicate_semantic_news(_refine_news(merged_news))
+        refined_news = _refine_news(merged_news)
+        if semantic_dedup:
+            refined_news = _deduplicate_semantic_news(refined_news)
         enriched_news = enrich_news_items(refined_news)
         log_info(
             f"新闻抓取汇总: eastmoney_count={len(valid_news)}, "
@@ -844,11 +857,15 @@ def get_news(minutes_lookback: Optional[int] = None) -> list[dict[str, Any]]:
         log_error(f"❌ 东方财富快讯抓取失败: reason={reason}")
         log_info("新闻抓取 fallback: 使用 RSS 数据继续生成结果")
         external_news = _fetch_external_rss_news(minutes_lookback)
-        normalized_external_news = _normalize_external_news(external_news)
-        normalized_external_news.sort(key=lambda x: x["datetime"], reverse=True)
-        refined_news = _deduplicate_semantic_news(
-            _refine_news(normalized_external_news)
+        normalized_external_news = (
+            _normalize_external_news(external_news)
+            if translate_external
+            else external_news
         )
+        normalized_external_news.sort(key=lambda x: x["datetime"], reverse=True)
+        refined_news = _refine_news(normalized_external_news)
+        if semantic_dedup:
+            refined_news = _deduplicate_semantic_news(refined_news)
         enriched_news = enrich_news_items(refined_news)
         log_info(
             f"新闻抓取汇总: eastmoney_count=0, "

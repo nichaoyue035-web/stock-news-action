@@ -1,10 +1,6 @@
 name: Market Fund Flow
 
 on:
-  schedule:
-    # UTC 07:03 = 北京时间 15:03 (收盘后3分钟)
-    # 周一到周五运行 (1-5)
-    - cron: '3 7 * * 1-5'
   workflow_dispatch: # 允许手动触发
 
 jobs:
