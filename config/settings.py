@@ -12,6 +12,10 @@ TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 TG_BOT_TOKEN_MONITOR = os.getenv("TG_BOT_TOKEN_MONITOR")
 TG_CHAT_ID_MONITOR = os.getenv("TG_CHAT_ID_MONITOR")
 
+# 3. 💰 主力资金雷达机器人
+TG_BOT_TOKEN_FUNDS = os.getenv("TG_BOT_TOKEN_FUNDS")
+TG_CHAT_ID_FUNDS = os.getenv("TG_CHAT_ID_FUNDS")
+
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 PICK_FILE = os.path.join(BASE_DIR, "stock_pick.json")

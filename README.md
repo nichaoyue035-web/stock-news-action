@@ -70,6 +70,8 @@
 | `TG_CHAT_ID` | Telegram 主推送 Chat ID | 主频道推送 |
 | `TG_BOT_TOKEN_MONITOR` | Telegram 监控频道 Bot Token | 监控频道推送，例如 `monitor`、`global` |
 | `TG_CHAT_ID_MONITOR` | Telegram 监控频道 Chat ID | 监控频道推送 |
+| `TG_BOT_TOKEN_FUNDS` | 主力资金雷达专属 Bot Token | VPS 上的 `funds` 模式；成功与失败状态均由此机器人发送 |
+| `TG_CHAT_ID_FUNDS` | 主力资金雷达专属 Chat ID | 资金雷达专属机器人对应的私聊、群组或频道 |
 | `GLOBAL_NEWS_RSS` | 默认海外 RSS 地址，可覆盖内置海外 RSS 源 | 海外/外部新闻抓取；未配置时使用代码内默认值 |
 | `CUSTOM_NEWS_RSS` | 追加自定义 RSS 源，多个地址用英文逗号分隔 | 额外新闻源，例如财经网站、机构 RSS、个人订阅源 |
 | `WATCHLIST_CODES` | 要监控的 A 股代码，逗号分隔 | `monitor` 行情通道；例如 `600519,000001`。为空则只监控新闻 |
@@ -85,6 +87,8 @@ export TG_BOT_TOKEN="your_telegram_bot_token"
 export TG_CHAT_ID="your_telegram_chat_id"
 export TG_BOT_TOKEN_MONITOR="your_monitor_bot_token"
 export TG_CHAT_ID_MONITOR="your_monitor_chat_id"
+export TG_BOT_TOKEN_FUNDS="your_funds_bot_token"
+export TG_CHAT_ID_FUNDS="your_funds_chat_id"
 export CUSTOM_NEWS_RSS="https://example.com/feed.xml,https://another-site.com/rss"
 export WATCHLIST_CODES="600519,000001"
 export PRICE_ALERT_MINUTE_CHANGE_PCT="1.0"
@@ -212,6 +216,7 @@ sudo systemctl enable --now stock-news-monitor.timer
 sudo systemctl enable --now stock-news-daily.timer
 sudo systemctl enable --now stock-news-periodic.timer
 sudo systemctl enable --now stock-news-after-market.timer
+sudo systemctl enable --now stock-news-funds.timer
 sudo systemctl enable --now stock-news-daily-health.timer
 systemctl list-timers 'stock-news-*'
 ```
@@ -232,6 +237,12 @@ python main.py health
 `stock-news-action@.service`），则每日健康定时器也必须使用相同前缀：将其
 `Unit=` 改为 `stock-news-action@daily_health.service`，并以
 `stock-news-action-daily-health.timer` 的名称启用。
+
+`stock-news-funds.timer` 会在每个工作日上海时间 15:10 运行主力资金雷达。若服务器
+使用 `stock-news-action@.service` 模板，定时器也必须使用相同前缀：将 `Unit=` 改为
+`stock-news-action@funds.service`，并以 `stock-news-action-funds.timer` 的名称启用。
+资金雷达会使用 `TG_BOT_TOKEN_FUNDS` 和 `TG_CHAT_ID_FUNDS`，不会借用主频道或监控
+频道的机器人。
 
 市场监控的“重要市场提醒”和“紧急市场提醒”均会在“可能影响”中分开呈现确认度、
 传导路径、A 股映射和后续验证点。重要提醒会按政策、宏观、资金、行业、公司或海外
