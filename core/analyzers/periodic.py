@@ -13,6 +13,7 @@ def run_periodic(prompts: dict[str, str]) -> None:
     from core.formatter import (
         _format_links,
         _format_market_message,
+        _format_news_facts,
         _format_news_prompt_line,
         _format_sources,
         _format_weekday,
@@ -57,9 +58,15 @@ def run_periodic(prompts: dict[str, str]) -> None:
                 source=_format_sources(news, "东方财富 / RSS"),
                 category="盘中",
                 importance="低（盘中简报）",
-                summary=content,
-                impact="用于盘中快速过滤新闻噪音和观察市场情绪。",
+                summary=f"【盘中事实】\n{_format_news_facts(news, limit=5)}",
+                impact=content,
                 links=_format_links([item.get("link") for item in news[:5]]),
+                market_scope="A股",
+                related_sectors=[
+                    sector
+                    for item in news[:20]
+                    for sector in item.get("related_sectors", [])
+                ][:6],
             )
         )
     else:

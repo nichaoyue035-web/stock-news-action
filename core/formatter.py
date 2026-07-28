@@ -63,6 +63,22 @@ def _format_news_prompt_line(item: dict[str, Any], include_time: bool = True) ->
     return f"- [{source}]{time_part} [{tags} / 板块:{sectors}] {item.get('title', '')}"
 
 
+def _format_news_facts(
+    news: list[dict[str, Any]], *, limit: int = 5, include_time: bool = True
+) -> str:
+    """Render source-attributed headlines as facts, without adding market judgment."""
+    facts: list[str] = []
+    for item in news[:limit]:
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        source = str(item.get("source") or "未知来源").strip()
+        time_text = str(item.get("time_str") or "").strip()
+        time_prefix = f"{time_text}｜" if include_time and time_text else ""
+        facts.append(f"{len(facts) + 1}. [{time_prefix}{source}] {title}")
+    return "\n".join(facts) if facts else "未获取到可核对的新闻事实。"
+
+
 def _format_sources(news: list[dict[str, Any]], fallback: str = "未知") -> str:
     sources: list[str] = []
     for item in news:

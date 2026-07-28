@@ -14,6 +14,7 @@ def run_after_market(prompts: dict[str, str]) -> None:
     from core.formatter import (
         _format_links,
         _format_market_message,
+        _format_news_facts,
         _format_news_prompt_line,
         _format_sources,
         _format_weekday,
@@ -68,11 +69,6 @@ def run_after_market(prompts: dict[str, str]) -> None:
         importance = (
             "中（市场复盘）" if mode == "after_market" else "低（盘中简报）"
         )
-        impact = (
-            "用于回看当日市场结构、资金偏好和次日风险点。"
-            if mode == "after_market"
-            else "用于盘中快速过滤新闻噪音和观察市场情绪。"
-        )
         _send_tg_with_summary(
             _format_market_message(
                 title,
@@ -80,9 +76,15 @@ def run_after_market(prompts: dict[str, str]) -> None:
                 source=_format_sources(news, "东方财富 / RSS"),
                 category=category,
                 importance=importance,
-                summary=content,
-                impact=impact,
+                summary=f"【收盘事实】\n{_format_news_facts(news, limit=6)}",
+                impact=content,
                 links=_format_links([item.get("link") for item in news[:5]]),
+                market_scope="A股",
+                related_sectors=[
+                    sector
+                    for item in news[:20]
+                    for sector in item.get("related_sectors", [])
+                ][:6],
             )
         )
     else:
