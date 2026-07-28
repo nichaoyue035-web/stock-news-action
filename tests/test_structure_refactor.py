@@ -295,9 +295,9 @@ def test_unverified_news_alert_explains_verification_without_sector_call():
     assert "【A股映射】" not in content
 
 
-def test_important_news_alert_uses_related_sectors_for_market_mapping():
+def test_important_monetary_policy_alert_has_specific_market_analysis():
     item = {
-        "title": "国务院发布资本市场新政策",
+        "title": "央行宣布下调存款准备金率",
         "digest": "",
         "source": "eastmoney",
         "link": "https://example.com/news/important",
@@ -310,8 +310,52 @@ def test_important_news_alert_uses_related_sectors_for_market_mapping():
 
     content = _build_news_alert(item, "重要")
 
-    assert "政策或宏观变化" in content
-    assert "优先观察金融" in content
+    assert "【确认度】" in content
+    assert "【传导路径】" in content
+    assert "【A股映射】" in content
+    assert "【后续验证】" in content
+    assert "资金面、无风险利率和融资成本" in content
+    assert "金融、地产" in content
+
+
+def test_important_macro_alert_distinguishes_growth_data_from_policy():
+    item = {
+        "title": "PMI 数据高于市场预期",
+        "digest": "制造业订单改善",
+        "source": "eastmoney",
+        "link": "https://example.com/news/macro",
+        "datetime": datetime.now(settings.SHA_TZ),
+        "category": "macro",
+        "importance": "high",
+        "market_scope": "A股",
+        "related_sectors": ["资源", "汽车"],
+    }
+
+    content = _build_news_alert(item, "重要")
+
+    assert "盈利和风险偏好预期" in content
+    assert "同比、环比、季调口径及预期差" in content
+    assert "资源、汽车" in content
+
+
+def test_important_company_alert_does_not_overstate_sector_signal():
+    item = {
+        "title": "某公司筹划重大资产重组并停牌",
+        "digest": "等待进一步公告",
+        "source": "eastmoney",
+        "link": "https://example.com/news/company",
+        "datetime": datetime.now(settings.SHA_TZ),
+        "category": "company",
+        "importance": "high",
+        "market_scope": "公司",
+        "related_sectors": ["新能源"],
+    }
+
+    content = _build_news_alert(item, "重要")
+
+    assert "重大公司事件" in content
+    assert "不把单一公司的公告直接等同于行业趋势" in content
+    assert "交易条款、审批条件、财务影响" in content
 
 
 def test_monitor_classifies_market_news_without_ai():
