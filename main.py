@@ -21,6 +21,7 @@ SUPPORTED_ANALYSIS_MODES: Final[set[str]] = {
     "monitor",
     "periodic",
     "after_market",
+    "radar",
     "global",
 }
 
@@ -35,6 +36,8 @@ REQUIRED_ENV_BY_MODE: Final[dict[str, tuple[str, ...]]] = {
     "monitor": ("TG_BOT_TOKEN_MONITOR", "TG_CHAT_ID_MONITOR"),
     "global": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN_MONITOR", "TG_CHAT_ID_MONITOR"),
     "daily_health": ("TG_BOT_TOKEN_MONITOR", "TG_CHAT_ID_MONITOR"),
+    "radar": ("TG_BOT_TOKEN_MONITOR", "TG_CHAT_ID_MONITOR"),
+    "telegram_listener": ("TG_BOT_TOKEN_MONITOR", "TG_CHAT_ID_MONITOR"),
 }
 
 
@@ -161,6 +164,11 @@ def main() -> None:
     _validate_required_env(mode)
     if mode == "daily_health":
         _send_daily_health_reminder()
+        return
+    if mode == "telegram_listener":
+        from core.telegram_interaction import run_telegram_listener
+
+        run_telegram_listener()
         return
     run_recommend, run_track, run_analysis, run_review, log_info, log_error = (
         _bootstrap_modules()

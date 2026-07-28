@@ -4,7 +4,7 @@ import html
 import logging
 import os
 import re
-from typing import Iterable
+from typing import Any, Iterable, Optional
 
 import requests
 
@@ -135,3 +135,63 @@ def send_tg(content, token=None, chat_id=None) -> bool:
         else:
             logger.info("✅ Telegram 推送成功")
     return True
+
+
+def send_tg_interactive(
+    content: Any,
+    *,
+    reply_markup: dict[str, Any],
+    token: Optional[str] = None,
+    chat_id: Optional[str] = None,
+) -> Optional[int]:
+    """Send one short Telegram message with callback buttons.
+
+    Interactive radar messages intentionally stay below Telegram's message limit,
+    because callback buttons belong to one concrete candidate message.  Return the
+    Telegram message ID only after delivery succeeds so it can be audited later.
+    """
+    use_token = token if token else settings.TG_BOT_TOKEN
+    use_chat_id = chat_id if chat_id else settings.TG_CHAT_ID
+    if not use_token or not use_chat_id:
+        message = "⚠️ Telegram 交互机器人未配置，无法发送雷达候选"
+        logger.warning(message)
+        _raise_in_ci(message)
+        return None
+
+    safe_content = _prepare_content(content)
+    if len(safe_content) > SAFE_TELEGRAM_CHUNK_LENGTH:
+        message = "❌ 交互雷达消息过长，拒绝发送以避免按钮与内容分离"
+        logger.error(message)
+        _raise_in_ci(message)
+        return None
+
+    try:
+        response = requests.post(
+            f"https://api.telegram.org/bot{use_token}/sendMessage",
+            json={
+                "chat_id": use_chat_id,
+                "text": safe_content,
+                "disable_web_page_preview": True,
+                "reply_markup": reply_markup,
+            },
+            timeout=10,
+        )
+    except requests.RequestException as exc:
+        message = f"❌ Telegram 交互消息请求异常: {exc.__class__.__name__}"
+        logger.error(message)
+        _raise_in_ci(message)
+        return None
+
+    if response.status_code != 200:
+        response_preview = response.text[:300].replace(use_token, "<redacted>")
+        message = f"❌ Telegram 交互消息发送失败: {response.status_code} - {response_preview}"
+        logger.error(message)
+        _raise_in_ci(f"Telegram 交互消息发送失败: {response.status_code}")
+        return None
+
+    try:
+        message_id = response.json().get("result", {}).get("message_id")
+        return int(message_id)
+    except (TypeError, ValueError, AttributeError):
+        logger.error("❌ Telegram 交互消息缺少 message_id")
+        return None
