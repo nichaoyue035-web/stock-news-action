@@ -1,5 +1,7 @@
-import pytest
+import json
 from datetime import datetime, timedelta
+
+import pytest
 
 import main
 from config import settings
@@ -34,6 +36,90 @@ def test_monitor_does_not_require_deepseek_credentials(monkeypatch):
     monkeypatch.setenv("TG_CHAT_ID_MONITOR", "chat")
 
     main._validate_required_env("monitor")
+
+
+def test_daily_health_uses_monitor_credentials(monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("TG_BOT_TOKEN_MONITOR", "token")
+    monkeypatch.setenv("TG_CHAT_ID_MONITOR", "chat")
+
+    main._validate_required_env("daily_health")
+
+
+def test_daily_health_sends_recent_success_status(monkeypatch, tmp_path):
+    import utils.notifier as notifier
+
+    status_file = tmp_path / "runtime_status.json"
+    status_file.write_text(
+        json.dumps(
+            {
+                "mode": "monitor",
+                "finished_at": datetime.now(settings.SHA_TZ).isoformat(),
+                "status": "success",
+                "data_fetch_success": True,
+                "news_count": 10,
+                "rss_count": 1,
+                "telegram_attempted": False,
+                "telegram_sent": False,
+                "reason": "",
+            }
+        ),
+        encoding="utf-8",
+    )
+    sent_messages = []
+    monkeypatch.setattr(settings, "RUN_STATUS_FILE", str(status_file))
+    monkeypatch.setattr(settings, "TG_BOT_TOKEN_MONITOR", "token")
+    monkeypatch.setattr(settings, "TG_CHAT_ID_MONITOR", "chat")
+    monkeypatch.setattr(
+        notifier,
+        "send_tg",
+        lambda content, **kwargs: sent_messages.append((content, kwargs)) or True,
+    )
+
+    main._send_daily_health_reminder()
+
+    assert len(sent_messages) == 1
+    assert "🟢 VPS 每日健康提醒：正常" in sent_messages[0][0]
+    assert sent_messages[0][1] == {"token": "token", "chat_id": "chat"}
+
+
+def test_daily_health_reports_stale_status_as_failure(monkeypatch, tmp_path):
+    import utils.notifier as notifier
+
+    status_file = tmp_path / "runtime_status.json"
+    status_file.write_text(
+        json.dumps(
+            {
+                "mode": "monitor",
+                "finished_at": (
+                    datetime.now(settings.SHA_TZ) - timedelta(minutes=31)
+                ).isoformat(),
+                "status": "success",
+                "data_fetch_success": True,
+                "news_count": 10,
+                "rss_count": 1,
+                "telegram_attempted": False,
+                "telegram_sent": False,
+                "reason": "",
+            }
+        ),
+        encoding="utf-8",
+    )
+    sent_messages = []
+    monkeypatch.setattr(settings, "RUN_STATUS_FILE", str(status_file))
+    monkeypatch.setattr(settings, "TG_BOT_TOKEN_MONITOR", "token")
+    monkeypatch.setattr(settings, "TG_CHAT_ID_MONITOR", "chat")
+    monkeypatch.setattr(
+        notifier,
+        "send_tg",
+        lambda content, **kwargs: sent_messages.append((content, kwargs)) or True,
+    )
+
+    with pytest.raises(SystemExit):
+        main._send_daily_health_reminder()
+
+    assert len(sent_messages) == 1
+    assert "🔴 VPS 每日健康提醒：需要检查" in sent_messages[0][0]
 
 
 def test_runtime_summary_writes_configured_status_file(monkeypatch, tmp_path):
