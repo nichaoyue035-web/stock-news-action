@@ -58,7 +58,7 @@
 | `review` | 历史表现回看 | 读取 `history.csv`，按 T+1、T+5、T+20 交易日统一计算正收益占比和平均收益 |
 | `daily_health` | VPS 每日健康提醒 | 向监控 Telegram 频道推送最近一次任务状态；失败、异常或状态过期会明确标红 |
 | `telegram_listener` | 雷达交互监听服务 | 常驻接收雷达消息按钮，用于延长或停止已自动开始的追踪 |
-| `yfinance_dev` | Yahoo Finance 开发探针 | 查询少量代码或 Yahoo 广泛市场筛选结果并输出本地测试报告；不发送 Telegram、不创建候选、不应部署到 VPS |
+| `yfinance_dev` | Yahoo Finance 两层开发探针 | 第一层查询行情候选，第二层补充近期可追溯事件证据；仅输出本地测试报告，不发送 Telegram、不创建候选、不应部署到 VPS |
 
 > 说明：`SUPPORTED_ANALYSIS_MODES` 与 `REQUIRED_ENV_BY_MODE` 在 `main.py` 中分别维护。README 仅说明当前代码支持的分发模式，不代表每个模式都适合高频运行或能覆盖所有投资场景。
 
@@ -84,6 +84,9 @@
 | `POLYGON_API_KEY` | Polygon 美股行情 Key | `radar` 的美股扫描与单标的追踪；不配置则跳过美股，不伪装为正常取数 |
 | `YFINANCE_DEV_TICKERS` | Yahoo Finance 开发测试代码，逗号分隔 | 仅 `yfinance_dev`；最多 20 只，不属于生产雷达配置 |
 | `YFINANCE_DEV_BROAD_SCAN` | Yahoo 广泛市场测试开关 | 仅 `yfinance_dev`；设为 `1` 时运行最多 250 条候选的筛选页面，不可与 `YFINANCE_DEV_TICKERS` 同时设置 |
+| `YFINANCE_DEV_EVENT_MAX_CANDIDATES` | 事件层最多核验的候选数 | 仅 `yfinance_dev`；默认 `20`，避免对候选页面逐只高频请求 |
+| `YFINANCE_DEV_EVENT_ITEMS_PER_SYMBOL` | 每只候选最多读取的 Yahoo 新闻数 | 仅 `yfinance_dev`；默认 `3` |
+| `YFINANCE_DEV_EVENT_MAX_AGE_HOURS` | 事件层新闻的最大时效 | 仅 `yfinance_dev`；默认 `24` 小时，过期或无时间新闻不作近期证据 |
 | `US_RADAR_MIN_PRICE` / `US_RADAR_MAX_PRICE` | 美股候选价格区间 | 默认 `$1–5` |
 | `US_RADAR_MIN_DAY_CHANGE_PCT` | 美股当日最小涨幅（百分比） | 默认 `10` |
 | `US_RADAR_MIN_DOLLAR_VOLUME` | 美股最小成交额（美元） | 默认 `1000000`，过滤低流动性噪音 |
@@ -187,10 +190,14 @@ python main.py telegram_listener
 
 ### Yahoo Finance 开发测试
 
-`yfinance_dev` 是单独的本地开发探针，用于核对 Yahoo Finance / yfinance 返回的价格、
-前收、成交量字段能否映射到当前美股筛选阈值。它不会读取或发送 Telegram，不会写入
-`monitor.db`，也不能加入 systemd 定时器。yfinance 并非 Yahoo 官方背书的数据接口，
-其数据仅用于研究和开发验证，不得标记为“全市场实时确认”。
+`yfinance_dev` 是单独的本地开发探针，分为两层：第一层核对 Yahoo Finance / yfinance
+返回的价格、前收、成交量能否映射到当前美股筛选阈值；第二层只为第一层候选读取少量、
+带时间和链接的近期 Yahoo 新闻。第二层的 `recent_traceable_event_found` 仅表示“找到近期
+可追溯来源”，不是“新闻已证明导致上涨”；`no_recent_traceable_event` 与
+`event_fetch_failed` 必须保留为待确认或失败，不能写成利好结论。
+
+它不会读取或发送 Telegram，不会写入 `monitor.db`，也不能加入 systemd 定时器。yfinance
+并非 Yahoo 官方背书的数据接口，其数据仅用于研究和开发验证，不得标记为“全市场实时确认”。
 
 先安装开发依赖，再只为本次终端会话指定少量代码：
 
@@ -211,8 +218,9 @@ export YFINANCE_DEV_BROAD_SCAN=1
 python main.py yfinance_dev
 ```
 
-此测试由 Yahoo 的筛选器先过滤美国股票，再最多返回 250 条结果；它只能用于验证“广泛
-候选发现”逻辑，不能证明未返回的股票没有异动，更不能替代正式全市场实时行情。
+此测试由 Yahoo 的筛选器先过滤美国股票，再最多返回 250 条结果；第二层再按顺序最多核验
+20 个候选的近期新闻。它只能用于验证“广泛候选池 + 事件证据”的字段与规则，不能证明未
+返回的股票没有异动，更不能替代正式全市场实时行情。
 
 ## 7. 数据文件与提示词
 

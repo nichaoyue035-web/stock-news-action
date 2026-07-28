@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Optional
 
 from config import settings
@@ -118,6 +119,161 @@ def _normalise_yfinance_screener_quote(item: Any) -> Optional[dict[str, Any]]:
         "volume": int(volume),
         "dollar_volume": round(dollar_volume, 2),
         "source": "yfinance-experimental-screener",
+    }
+
+
+def _read_nested_value(item: Any, *paths: tuple[str, ...]) -> Any:
+    """Return the first present value from simple nested mapping paths."""
+    for path in paths:
+        current = item
+        for key in path:
+            if not isinstance(current, dict) or key not in current:
+                break
+            current = current[key]
+        else:
+            if current not in (None, ""):
+                return current
+    return None
+
+
+def _normalise_event_time(value: Any) -> Optional[datetime]:
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+    return None
+
+
+def _normalise_yfinance_news_item(item: Any) -> Optional[dict[str, Any]]:
+    """Keep only inspectable Yahoo headline fields; do not infer causality."""
+    if not isinstance(item, dict):
+        return None
+    title = _read_nested_value(item, ("content", "title"), ("title",))
+    if not isinstance(title, str) or not title.strip():
+        return None
+    published_at = _normalise_event_time(
+        _read_nested_value(
+            item,
+            ("content", "pubDate"),
+            ("content", "providerPublishTime"),
+            ("pubDate",),
+            ("providerPublishTime",),
+        )
+    )
+    url = _read_nested_value(
+        item,
+        ("content", "canonicalUrl", "url"),
+        ("content", "clickThroughUrl", "url"),
+        ("link",),
+        ("url",),
+    )
+    publisher = _read_nested_value(
+        item,
+        ("content", "provider", "displayName"),
+        ("publisher",),
+        ("provider",),
+    )
+    return {
+        "title": title.strip(),
+        "publisher": str(publisher).strip() if publisher else None,
+        "published_at": published_at.isoformat() if published_at else None,
+        "url": str(url).strip() if url else None,
+        "_published_datetime": published_at,
+    }
+
+
+def fetch_yfinance_event_evidence(
+    symbols: Iterable[Any],
+    ticker_factory: Optional[TickerFactory] = None,
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """Fetch traceable, recent Yahoo headlines for a capped candidate subset.
+
+    A headline is evidence that a recent source item exists, not proof that it
+    caused the price move. Failed or absent evidence remains visible instead
+    of being silently presented as a confirmed event.
+    """
+    clean_symbols = _normalise_symbols(symbols)
+    candidate_limit = settings.YFINANCE_DEV_EVENT_MAX_CANDIDATES
+    selected_symbols = clean_symbols[:candidate_limit]
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+    cutoff = current_time - timedelta(hours=settings.YFINANCE_DEV_EVENT_MAX_AGE_HOURS)
+    create_ticker = ticker_factory or _load_ticker_factory()
+    records: list[dict[str, Any]] = []
+
+    for symbol in selected_symbols:
+        try:
+            raw_items = create_ticker(symbol).get_news(
+                count=settings.YFINANCE_DEV_EVENT_ITEMS_PER_SYMBOL,
+                tab="news",
+            )
+            if not isinstance(raw_items, list):
+                raise ValueError("新闻源没有返回列表")
+            items = [
+                normalised
+                for item in raw_items
+                if (normalised := _normalise_yfinance_news_item(item)) is not None
+            ]
+            recent_items = [
+                item
+                for item in items
+                if item["_published_datetime"] is not None
+                and cutoff <= item["_published_datetime"] <= current_time
+            ]
+            for item in recent_items:
+                item.pop("_published_datetime", None)
+            records.append(
+                {
+                    "symbol": symbol,
+                    "event_evidence_status": (
+                        "recent_traceable_event_found"
+                        if recent_items
+                        else "no_recent_traceable_event"
+                    ),
+                    "recent_event_items": recent_items,
+                    "requires_secondary_confirmation": True,
+                }
+            )
+        except Exception as exc:
+            log_error(
+                f"⚠️ yfinance 事件层获取失败 [{symbol}]: {exc.__class__.__name__}"
+            )
+            records.append(
+                {
+                    "symbol": symbol,
+                    "event_evidence_status": "event_fetch_failed",
+                    "recent_event_items": [],
+                    "requires_secondary_confirmation": True,
+                    "failure_reason": exc.__class__.__name__,
+                }
+            )
+
+    found_count = sum(
+        record["event_evidence_status"] == "recent_traceable_event_found"
+        for record in records
+    )
+    failed_count = sum(
+        record["event_evidence_status"] == "event_fetch_failed" for record in records
+    )
+    return {
+        "purpose": "第二层：仅核验近期可追溯新闻，不判断新闻必然导致行情异动",
+        "candidate_limit": candidate_limit,
+        "selected_count": len(selected_symbols),
+        "not_checked_count": max(0, len(clean_symbols) - len(selected_symbols)),
+        "event_max_age_hours": settings.YFINANCE_DEV_EVENT_MAX_AGE_HOURS,
+        "recent_event_found_count": found_count,
+        "no_recent_event_count": len(records) - found_count - failed_count,
+        "event_fetch_failed_count": failed_count,
+        "records": records,
     }
 
 
@@ -254,21 +410,32 @@ def run_yfinance_dev_probe() -> None:
                 "广泛市场测试不应同时设置 YFINANCE_DEV_TICKERS；请只保留一种测试方式"
             )
         market_result = fetch_yfinance_broad_market_candidates()
+        event_result = fetch_yfinance_event_evidence(
+            candidate["symbol"] for candidate in market_result["candidates"]
+        )
         report = {
             "mode": "yfinance_dev",
-            "purpose": "Yahoo 广泛市场开发测试；非生产行情源；不发送 Telegram",
+            "purpose": "Yahoo 两层市场开发测试；非生产行情源；不发送 Telegram",
             "coverage_warning": (
                 "仅为 Yahoo 筛选器返回的候选页面，结果最多 250 条；"
                 "不代表完整美国市场、实时确认或可交易性。"
             ),
-            **market_result,
+            "layers": {
+                "market_candidate_scan": market_result,
+                "event_evidence_check": event_result,
+            },
         }
         print(json.dumps(report, ensure_ascii=False, indent=2))
-        log_info(
-            "yfinance 广泛市场开发测试完成: "
-            f"返回 {market_result['returned_count']} 条，"
-            f"规则匹配 {len(market_result['candidates'])} 条"
+        summary = (
+            "yfinance 两层广泛市场开发测试: "
+            f"行情候选 {len(market_result['candidates'])} 条；"
+            f"近期事件证据 {event_result['recent_event_found_count']} 条；"
+            f"事件层失败 {event_result['event_fetch_failed_count']} 条"
         )
+        if event_result["event_fetch_failed_count"]:
+            log_error(f"⚠️ {summary}")
+        else:
+            log_info(summary)
         return
 
     quotes = fetch_yfinance_dev_quotes(symbols)
@@ -276,13 +443,25 @@ def run_yfinance_dev_probe() -> None:
         raise RuntimeError("yfinance 开发测试未获得任何有效报价，不能视为成功")
 
     requested = len(symbols)
+    event_result = fetch_yfinance_event_evidence(quote["symbol"] for quote in quotes)
     report = {
         "mode": "yfinance_dev",
-        "purpose": "本地开发测试；非生产行情源；不发送 Telegram",
+        "purpose": "Yahoo 两层开发测试；非生产行情源；不发送 Telegram",
         "requested_symbols": symbols,
         "received_count": len(quotes),
         "failed_count": requested - len(quotes),
-        "quotes": quotes,
+        "layers": {
+            "market_quote_check": quotes,
+            "event_evidence_check": event_result,
+        },
     }
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    log_info(f"yfinance 开发测试完成: {len(quotes)}/{requested} 个标的有有效报价")
+    summary = (
+        f"yfinance 两层开发测试: 行情 {len(quotes)}/{requested}；"
+        f"近期事件证据 {event_result['recent_event_found_count']}；"
+        f"事件层失败 {event_result['event_fetch_failed_count']}"
+    )
+    if event_result["event_fetch_failed_count"]:
+        log_error(f"⚠️ {summary}")
+    else:
+        log_info(summary)
