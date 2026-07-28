@@ -34,6 +34,7 @@ REQUIRED_ENV_BY_MODE: Final[dict[str, tuple[str, ...]]] = {
     "review": ("TG_BOT_TOKEN", "TG_CHAT_ID"),
     "monitor": ("TG_BOT_TOKEN_MONITOR", "TG_CHAT_ID_MONITOR"),
     "global": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN_MONITOR", "TG_CHAT_ID_MONITOR"),
+    "daily_health": ("TG_BOT_TOKEN_MONITOR", "TG_CHAT_ID_MONITOR"),
 }
 
 
@@ -72,24 +73,83 @@ def _resolve_mode(argv: list[str]) -> str:
     return argv[1] if len(argv) > 1 else "daily"
 
 
-def _print_health_status() -> None:
-    """Print the latest VPS heartbeat and fail when it is missing/stale/failed."""
+def _read_health_status() -> tuple[dict[str, object], datetime, float]:
+    """Read the latest heartbeat and return its status, finish time, and age."""
     from config import settings
 
     try:
         with open(settings.RUN_STATUS_FILE, "r", encoding="utf-8") as file:
             status = json.load(file)
+        if not isinstance(status, dict):
+            raise ValueError("运行状态不是对象")
         finished_at = datetime.fromisoformat(str(status["finished_at"]))
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         _fatal(f"❌ 无法读取运行状态: {exc.__class__.__name__}")
 
-    max_age_minutes = int(os.getenv("HEALTH_MAX_AGE_MINUTES", "30"))
     age_seconds = (datetime.now(settings.SHA_TZ) - finished_at).total_seconds()
+    return status, finished_at, age_seconds
+
+
+def _is_healthy_status(status: dict[str, object], age_seconds: float) -> bool:
+    """Return whether the latest heartbeat is recent and fully successful."""
+    max_age_minutes = int(os.getenv("HEALTH_MAX_AGE_MINUTES", "30"))
+    return (
+        status.get("status") == "success"
+        and age_seconds <= max_age_minutes * 60
+    )
+
+
+def _print_health_status() -> None:
+    """Print the latest VPS heartbeat and fail when it is missing/stale/failed."""
+    status, _, age_seconds = _read_health_status()
+    max_age_minutes = int(os.getenv("HEALTH_MAX_AGE_MINUTES", "30"))
     print(json.dumps(status, ensure_ascii=False, indent=2))
     if status.get("status") == "failed":
         _fatal("❌ 最近一次任务执行失败")
     if age_seconds > max_age_minutes * 60:
         _fatal(f"❌ 运行状态已过期: {age_seconds / 60:.0f} 分钟")
+
+
+def _send_daily_health_reminder() -> None:
+    """Send a clear daily Telegram heartbeat for the VPS monitor channel."""
+    from config import settings
+    from utils.notifier import send_tg
+
+    status, finished_at, age_seconds = _read_health_status()
+    healthy = _is_healthy_status(status, age_seconds)
+    last_telegram = (
+        "已成功发送"
+        if status.get("telegram_sent")
+        else "本轮未触发（正常）"
+        if not status.get("telegram_attempted")
+        else "发送失败"
+    )
+    icon = "🟢" if healthy else "🔴"
+    health_text = "正常" if healthy else "需要检查"
+    message = "\n".join(
+        (
+            f"{icon} VPS 每日健康提醒：{health_text}",
+            f"最近任务：{status.get('mode') or '未知'}",
+            f"完成时间：{finished_at.isoformat()}",
+            f"状态：{status.get('status') or '未知'}",
+            f"距今：{max(0, age_seconds) / 60:.0f} 分钟",
+            "数据："
+            f"抓取={'成功' if status.get('data_fetch_success') else '未确认'}；"
+            f"新闻={status.get('news_count') if status.get('news_count') is not None else '未知'}；"
+            f"RSS={status.get('rss_count') if status.get('rss_count') is not None else '未知'}",
+            f"上轮 Telegram：{last_telegram}",
+            f"说明：{status.get('reason') or '无'}",
+        )
+    )
+    if not send_tg(
+        message,
+        token=settings.TG_BOT_TOKEN_MONITOR,
+        chat_id=settings.TG_CHAT_ID_MONITOR,
+    ):
+        _fatal("❌ 每日健康提醒 Telegram 推送失败")
+    print(message)
+    if not healthy:
+        _fatal("❌ 每日健康提醒检测到任务失败、异常或状态过期")
 
 
 def main() -> None:
@@ -99,6 +159,9 @@ def main() -> None:
         _print_health_status()
         return
     _validate_required_env(mode)
+    if mode == "daily_health":
+        _send_daily_health_reminder()
+        return
     run_recommend, run_track, run_analysis, run_review, log_info, log_error = (
         _bootstrap_modules()
     )

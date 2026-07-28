@@ -55,6 +55,7 @@
 | `recommend` | AI 每日股票观察 | 从热门股票和近期新闻中选择一个观察标的，保存到 `stock_pick.json` 并写入 `history.csv` |
 | `track` | 跟踪已选观察标的 | 读取 `stock_pick.json` 中的标的，获取最新行情并生成简短跟踪观点 |
 | `review` | 历史表现回看 | 读取 `history.csv`，按 T+1、T+5、T+20 交易日统一计算正收益占比和平均收益 |
+| `daily_health` | VPS 每日健康提醒 | 向监控 Telegram 频道推送最近一次任务状态；失败、异常或状态过期会明确标红 |
 
 > 说明：`SUPPORTED_ANALYSIS_MODES` 与 `REQUIRED_ENV_BY_MODE` 在 `main.py` 中分别维护。README 仅说明当前代码支持的分发模式，不代表每个模式都适合高频运行或能覆盖所有投资场景。
 
@@ -207,6 +208,7 @@ sudo systemctl enable --now stock-news-monitor.timer
 sudo systemctl enable --now stock-news-daily.timer
 sudo systemctl enable --now stock-news-periodic.timer
 sudo systemctl enable --now stock-news-after-market.timer
+sudo systemctl enable --now stock-news-daily-health.timer
 systemctl list-timers 'stock-news-*'
 ```
 
@@ -216,6 +218,16 @@ systemctl list-timers 'stock-news-*'
 ```bash
 python main.py health
 ```
+
+`stock-news-daily-health.timer` 会在每天 08:40（上海时间）向监控 Telegram
+频道发送一条健康提醒。它会报告最近任务、数据抓取、上轮 Telegram 投递和状态
+文件年龄；只要发现失败、非成功状态或状态超过 `HEALTH_MAX_AGE_MINUTES`，消息会
+标为异常，并让该次 systemd 任务失败，便于在日志中追踪。
+
+如果服务器已经使用了不同前缀的模板服务（例如
+`stock-news-action@.service`），则每日健康定时器也必须使用相同前缀：将其
+`Unit=` 改为 `stock-news-action@daily_health.service`，并以
+`stock-news-action-daily-health.timer` 的名称启用。
 
 监控去重文件应放在 `/var/lib/stock-news-action/` 等持久目录。GitHub Actions 的临时
 文件系统不会跨运行保存 `monitor_seen.json`，因此不应把 Actions 当作有状态监控器。
