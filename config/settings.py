@@ -17,7 +17,12 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 PICK_FILE = os.path.join(BASE_DIR, "stock_pick.json")
 PROMPTS_FILE = os.path.join(BASE_DIR, "prompts.json")
 HISTORY_FILE = os.path.join(BASE_DIR, "history.csv")
-MONITOR_DB_FILE = os.path.join(BASE_DIR, "monitor.db")
+MONITOR_DB_FILE = os.getenv(
+    "MONITOR_DB_FILE", os.path.join(BASE_DIR, "monitor.db")
+)
+RUN_STATUS_FILE = os.getenv(
+    "RUN_STATUS_FILE", os.path.join(BASE_DIR, "runtime_status.json")
+)
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",

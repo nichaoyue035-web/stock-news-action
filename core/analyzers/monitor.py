@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, time, timedelta
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 from config import settings
 from core.data_fetcher import get_data_source_health, get_news, get_stock_quote

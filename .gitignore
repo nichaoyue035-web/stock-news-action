@@ -6,3 +6,4 @@ monitor_seen.json
 monitor.db
 monitor.db-shm
 monitor.db-wal
+runtime_status.json
