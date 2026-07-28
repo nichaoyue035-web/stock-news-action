@@ -17,7 +17,12 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 PICK_FILE = os.path.join(BASE_DIR, "stock_pick.json")
 PROMPTS_FILE = os.path.join(BASE_DIR, "prompts.json")
 HISTORY_FILE = os.path.join(BASE_DIR, "history.csv")
-MONITOR_STATE_FILE = os.path.join(BASE_DIR, "monitor_seen.json")
+MONITOR_STATE_FILE = os.getenv(
+    "MONITOR_STATE_FILE", os.path.join(BASE_DIR, "monitor_seen.json")
+)
+RUN_STATUS_FILE = os.getenv(
+    "RUN_STATUS_FILE", os.path.join(BASE_DIR, "runtime_status.json")
+)
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -27,6 +32,7 @@ USER_AGENTS = [
 URL_NEWS = "https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_100_1_.html"
 URL_FUNDS = "https://push2.eastmoney.com/api/qt/clist/get"
 URL_QUOTE = "https://push2.eastmoney.com/api/qt/stock/get"
+URL_HISTORY = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
 
 # 海外默认信息源（可通过环境变量覆盖）
 # 旧地址 feeds.reuters.com 已经不稳定/失效，改为 Reuters Agency 新 feed 结构

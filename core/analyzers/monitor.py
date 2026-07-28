@@ -7,6 +7,7 @@ import os
 import re
 from datetime import datetime, timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 from config import settings
 from core.data_fetcher import get_news
@@ -64,6 +65,42 @@ BLACK_SWAN_KEYWORDS = (
     "tsunami",
     "pandemic",
 )
+BLACK_SWAN_STRONG_PHRASES = (
+    "正式开战",
+    "宣布开战",
+    "进入紧急状态",
+    "触发熔断",
+    "发生强震",
+    "发生海啸",
+    "宣布破产",
+    "主权违约",
+    "bank run",
+    "declared war",
+    "state of emergency",
+    "circuit breaker triggered",
+)
+BLACK_SWAN_CONTEXT_EXCLUSIONS = (
+    "历史回顾",
+    "周年纪念",
+    "军事演习",
+    "模拟演练",
+    "电影",
+    "电视剧",
+    "游戏",
+    "小说",
+    "未经证实",
+    "网传",
+)
+TRUSTED_URGENT_SOURCE_MARKERS = (
+    "eastmoney",
+    "reuters",
+    "apnews",
+    "bbc.",
+    "ft.com",
+    "wsj.com",
+    "bloomberg",
+    "gov.",
+)
 SMALL_COMPANY_NEWS_HIGH_IMPACT_KEYWORDS = (
     "停牌",
     "复牌",
@@ -85,9 +122,28 @@ def _is_monitor_alert_importance(item: dict[str, Any]) -> bool:
 
 
 def _is_black_swan_candidate(item: dict[str, Any]) -> bool:
-    """Return whether a headline warrants a black-swan-level urgent review."""
+    """Score source, wording and context before urgent AI review."""
     text = f"{item.get('title', '')} {item.get('digest', '')}".lower()
-    return any(keyword.lower() in text for keyword in BLACK_SWAN_KEYWORDS)
+    if not any(keyword.lower() in text for keyword in BLACK_SWAN_KEYWORDS):
+        return False
+
+    score = 2
+    if any(phrase.lower() in text for phrase in BLACK_SWAN_STRONG_PHRASES):
+        score += 2
+    if _is_trusted_urgent_source(item):
+        score += 1
+    if _is_monitor_alert_importance(item):
+        score += 1
+    if any(term.lower() in text for term in BLACK_SWAN_CONTEXT_EXCLUSIONS):
+        score -= 2
+    return score >= 3
+
+
+def _is_trusted_urgent_source(item: dict[str, Any]) -> bool:
+    source = str(item.get("source") or "").lower()
+    host = urlparse(str(item.get("link") or "")).netloc.lower()
+    combined = f"{source} {host}"
+    return any(marker in combined for marker in TRUSTED_URGENT_SOURCE_MARKERS)
 
 
 def _is_low_value_company_news(item: dict[str, Any]) -> bool:
@@ -109,7 +165,8 @@ def _is_low_value_company_news(item: dict[str, Any]) -> bool:
 
 def _monitor_news_key(item: dict[str, Any]) -> str:
     """Return a stable key for preventing repeated monitor alerts."""
-    return re.sub(r"\s+", " ", str(item.get("title") or "")).strip()
+    title = str(item.get("title") or "").lower()
+    return re.sub(r"[\W_]+", "", title, flags=re.UNICODE)
 
 
 def _load_recent_monitor_alerts(now: datetime) -> dict[str, float]:
@@ -151,6 +208,9 @@ def _record_monitor_alerts(
 
     temp_file = f"{settings.MONITOR_STATE_FILE}.tmp"
     try:
+        state_dir = os.path.dirname(settings.MONITOR_STATE_FILE)
+        if state_dir:
+            os.makedirs(state_dir, exist_ok=True)
         with open(temp_file, "w", encoding="utf-8") as file:
             json.dump(recent_alerts, file, ensure_ascii=False, sort_keys=True)
         os.replace(temp_file, settings.MONITOR_STATE_FILE)
@@ -167,6 +227,27 @@ def _filter_unseen_monitor_news(
         for item in news
         if not (key := _monitor_news_key(item)) or key not in recent_alerts
     ]
+
+
+def _parse_monitor_alert_line(
+    line: str, item_count: int
+) -> tuple[int, str] | None:
+    """Parse the model's one-based ALERT protocol into a zero-based index."""
+    if "ALERT|" not in line:
+        return None
+    parts = line.split("|")
+    if len(parts) < 3:
+        return None
+    try:
+        one_based_idx = int(parts[1].strip())
+    except ValueError:
+        return None
+    if not 1 <= one_based_idx <= item_count:
+        return None
+    impact = "|".join(parts[2:]).strip()
+    if not impact:
+        return None
+    return one_based_idx - 1, impact
 
 
 def run_monitor(prompts: dict[str, str]) -> None:
@@ -305,7 +386,7 @@ def run_monitor(prompts: dict[str, str]) -> None:
             f"范围:{n.get('market_scope') or '其他'}] "
             f"{n['title']} (详情:{n['digest'][:60]})"
         )
-        for i, n in enumerate(dedup_news[:12])
+        for i, n in enumerate(dedup_news[:12], start=1)
     ]
     prompt = prompts.get("monitor", settings.DEFAULT_PROMPTS["monitor"]).format(
         news_list="\n".join(news_titles)
@@ -331,34 +412,28 @@ def run_monitor(prompts: dict[str, str]) -> None:
     alerts_buffer: list[str] = []
     alert_items: list[dict[str, Any]] = []
     for line in content.split("\n"):
-        if "ALERT|" not in line:
+        parsed_alert = _parse_monitor_alert_line(line, len(dedup_news))
+        if parsed_alert is None:
             continue
-        parts = line.split("|")
-        if len(parts) < 3:
-            continue
-        try:
-            idx = int(re.sub(r"\D", "", parts[1]))
-        except ValueError:
-            continue
-        if idx < len(dedup_news):
-            item = dedup_news[idx]
-            alert_items.append(item)
-            link = str(item.get("link") or "").strip()
-            alerts_buffer.append(
-                _format_market_message(
-                    "市场信息摘要",
-                    report_time=_format_news_time(item),
-                    source=str(item.get("source") or "未知"),
-                    category=_infer_news_category(item),
-                    importance=_infer_market_importance(item),
-                    summary=str(item.get("title") or "未知"),
-                    impact=parts[2],
-                    links=link or "未知",
-                    market_scope=str(item.get("market_scope") or "其他"),
-                    related_sectors=item.get("related_sectors"),
-                    include_title=False,
-                )
+        idx, impact = parsed_alert
+        item = dedup_news[idx]
+        alert_items.append(item)
+        link = str(item.get("link") or "").strip()
+        alerts_buffer.append(
+            _format_market_message(
+                "市场信息摘要",
+                report_time=_format_news_time(item),
+                source=str(item.get("source") or "未知"),
+                category=_infer_news_category(item),
+                importance=_infer_market_importance(item),
+                summary=str(item.get("title") or "未知"),
+                impact=impact,
+                links=link or "未知",
+                market_scope=str(item.get("market_scope") or "其他"),
+                related_sectors=item.get("related_sectors"),
+                include_title=False,
             )
+        )
 
     final_alert_items = len(alerts_buffer[:3])
     if alerts_buffer:

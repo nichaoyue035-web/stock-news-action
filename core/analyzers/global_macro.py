@@ -25,7 +25,13 @@ def run_global(prompts: dict[str, str]) -> None:
         _get_ai_response_with_health,
     )
 
-    news = get_news(180)
+    all_news = get_news(180)
+    news = [
+        item
+        for item in all_news
+        if str(item.get("source") or "").lower() != "eastmoney"
+        or item.get("market_scope") in {"全球", "美股", "港股"}
+    ]
     _record_news_summary(news)
     if not news:
         _send_health_status(
