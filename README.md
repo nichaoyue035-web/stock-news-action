@@ -54,7 +54,7 @@
 | `global` | 国际宏观与板块雷达 | 从近 3 小时新闻中提炼可能影响全球市场或 A 股映射的海外事件，推送到监控频道 |
 | `recommend` | AI 每日股票观察 | 从热门股票和近期新闻中选择一个观察标的，保存到 `stock_pick.json` 并写入 `history.csv` |
 | `track` | 跟踪已选观察标的 | 读取 `stock_pick.json` 中的标的，获取最新行情并生成简短跟踪观点 |
-| `review` | 历史表现回看 | 读取 `history.csv`，计算最近记录的表现、胜率和平均收益，并推送结果 |
+| `review` | 历史表现回看 | 读取 `history.csv`，按 T+1、T+5、T+20 交易日统一计算正收益占比和平均收益 |
 
 > 说明：`SUPPORTED_ANALYSIS_MODES` 与 `REQUIRED_ENV_BY_MODE` 在 `main.py` 中分别维护。README 仅说明当前代码支持的分发模式，不代表每个模式都适合高频运行或能覆盖所有投资场景。
 
@@ -183,3 +183,47 @@ python main.py daily
 - 需要观察标的时用 `recommend` 生成候选，再自行研究基本面、技术面和风险。
 
 最终决策仍应由用户自己完成。
+
+## 11. VPS 生产调度与健康检查
+
+GitHub Actions 工作流现在主要用于手动回退，生产定时任务由 VPS 承担。仓库提供
+`deploy/systemd/` 示例，避免生产调度只存在于服务器的手工配置中。
+
+建议部署目录和专用用户：
+
+```bash
+sudo useradd --system --home /opt/stock-news-action --shell /usr/sbin/nologin stockbot
+sudo cp deploy/systemd/* /etc/systemd/system/
+sudo cp deploy/stock-news-action.env.example /etc/stock-news-action.env
+sudo chmod 600 /etc/stock-news-action.env
+```
+
+编辑 `/etc/stock-news-action.env`，填入真实 Secrets。不要把修改后的文件提交到仓库。
+然后启用需要的定时器：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now stock-news-monitor.timer
+sudo systemctl enable --now stock-news-daily.timer
+sudo systemctl enable --now stock-news-periodic.timer
+sudo systemctl enable --now stock-news-after-market.timer
+systemctl list-timers 'stock-news-*'
+```
+
+每次任务结束都会原子写入 `RUN_STATUS_FILE`。以下命令会输出最近一次运行摘要；
+如果最近任务失败、状态文件损坏或超过 `HEALTH_MAX_AGE_MINUTES`，命令返回非零状态：
+
+```bash
+python main.py health
+```
+
+监控去重文件应放在 `/var/lib/stock-news-action/` 等持久目录。GitHub Actions 的临时
+文件系统不会跨运行保存 `monitor_seen.json`，因此不应把 Actions 当作有状态监控器。
+
+## 12. AI 调用与复盘口径
+
+- 中文检测在本地完成，只有非中文 RSS 才调用翻译模型。
+- 语义去重先用标题相似度筛选，只有疑似重复的小集合交给 DeepSeek。
+- `review` 不再把不同持有天数的当前收益混为一个“胜率”，而是分别统计
+  T+1、T+5、T+20 交易日表现。
+- 尚未走完相应交易周期的记录不会混入该周期统计。

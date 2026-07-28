@@ -61,6 +61,42 @@ BLACK_SWAN_KEYWORDS = (
     "tsunami",
     "pandemic",
 )
+BLACK_SWAN_STRONG_PHRASES = (
+    "正式开战",
+    "宣布开战",
+    "进入紧急状态",
+    "触发熔断",
+    "发生强震",
+    "发生海啸",
+    "宣布破产",
+    "主权违约",
+    "bank run",
+    "declared war",
+    "state of emergency",
+    "circuit breaker triggered",
+)
+BLACK_SWAN_CONTEXT_EXCLUSIONS = (
+    "历史回顾",
+    "周年纪念",
+    "军事演习",
+    "模拟演练",
+    "电影",
+    "电视剧",
+    "游戏",
+    "小说",
+    "未经证实",
+    "网传",
+)
+TRUSTED_URGENT_SOURCE_MARKERS = (
+    "eastmoney",
+    "reuters",
+    "apnews",
+    "bbc.",
+    "ft.com",
+    "wsj.com",
+    "bloomberg",
+    "gov.",
+)
 SMALL_COMPANY_NEWS_HIGH_IMPACT_KEYWORDS = (
     "停牌",
     "复牌",
@@ -82,9 +118,28 @@ def _is_monitor_alert_importance(item: dict[str, Any]) -> bool:
 
 
 def _is_black_swan_candidate(item: dict[str, Any]) -> bool:
-    """Return whether a headline warrants a black-swan-level urgent review."""
+    """Score source, wording and context before urgent AI review."""
     text = f"{item.get('title', '')} {item.get('digest', '')}".lower()
-    return any(keyword.lower() in text for keyword in BLACK_SWAN_KEYWORDS)
+    if not any(keyword.lower() in text for keyword in BLACK_SWAN_KEYWORDS):
+        return False
+
+    score = 2
+    if any(phrase.lower() in text for phrase in BLACK_SWAN_STRONG_PHRASES):
+        score += 2
+    if _is_trusted_urgent_source(item):
+        score += 1
+    if _is_monitor_alert_importance(item):
+        score += 1
+    if any(term.lower() in text for term in BLACK_SWAN_CONTEXT_EXCLUSIONS):
+        score -= 2
+    return score >= 3
+
+
+def _is_trusted_urgent_source(item: dict[str, Any]) -> bool:
+    source = str(item.get("source") or "").lower()
+    host = urlparse(str(item.get("link") or "")).netloc.lower()
+    combined = f"{source} {host}"
+    return any(marker in combined for marker in TRUSTED_URGENT_SOURCE_MARKERS)
 
 
 def _is_low_value_company_news(item: dict[str, Any]) -> bool:

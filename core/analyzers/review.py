@@ -5,10 +5,38 @@ from __future__ import annotations
 import csv
 import os
 from datetime import datetime
+from typing import Any
 
 from config import settings
-from core.data_fetcher import get_stock_quote, reset_data_source_health
+from core.data_fetcher import get_stock_history_closes, reset_data_source_health
 from utils.notifier import log_error
+
+REVIEW_HORIZONS = (1, 5, 20)
+
+
+def _calculate_forward_returns(
+    start_price: Any,
+    closes: list[dict[str, Any]],
+    horizons: tuple[int, ...] = REVIEW_HORIZONS,
+) -> dict[int, float]:
+    """Calculate comparable returns at fixed post-recommendation sessions."""
+    try:
+        start = float(start_price)
+    except (TypeError, ValueError):
+        return {}
+    if start <= 0:
+        return {}
+
+    returns: dict[int, float] = {}
+    for horizon in horizons:
+        if len(closes) < horizon:
+            continue
+        try:
+            close = float(closes[horizon - 1]["close"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        returns[horizon] = (close - start) / start * 100
+    return returns
 
 
 def run_review() -> None:
@@ -33,36 +61,51 @@ def run_review() -> None:
         details: list[str] = []
         skipped_reasons: list[str] = []
         total_rows = len(recent_rows)
-        total_count = 0
-        win_count = 0
-        total_profit = 0.0
+        metrics: dict[int, list[float]] = {
+            horizon: [] for horizon in REVIEW_HORIZONS
+        }
 
         for row in recent_rows:
-            curr_quote = get_stock_quote(row["Code"])
-            if not curr_quote:
-                skipped_reasons.append(f"{row.get('Name', '未知')}：行情为空")
-                continue
-            try:
-                start = float(row["Start_Price"])
-                curr = float(curr_quote["price"])
-                pct = (curr - start) / start * 100
-            except (ValueError, TypeError, ZeroDivisionError):
-                skipped_reasons.append(f"{row.get('Name', '未知')}：价格无法计算")
+            closes = get_stock_history_closes(
+                row.get("Code"), row.get("Date", ""), max(REVIEW_HORIZONS)
+            )
+            forward_returns = _calculate_forward_returns(
+                row.get("Start_Price"), closes
+            )
+            if not forward_returns:
+                skipped_reasons.append(
+                    f"{row.get('Name', '未知')}：固定周期行情不足"
+                )
                 continue
 
-            total_count += 1
-            total_profit += pct
-            if pct > 0:
-                win_count += 1
-            icon = "🔴" if pct > 0 else "🟢"
-            details.append(f"{icon} {row['Name']}: {pct:+.2f}%")
+            row_parts = []
+            for horizon in REVIEW_HORIZONS:
+                if horizon not in forward_returns:
+                    continue
+                pct = forward_returns[horizon]
+                metrics[horizon].append(pct)
+                row_parts.append(f"T+{horizon} {pct:+.2f}%")
+            details.append(f"{row['Name']}: " + " / ".join(row_parts))
 
-        _record_fetch_success(total_count > 0)
-        if total_count == 0:
-            _send_health_status("历史观察记录没有可用行情数据")
+        calculated_rows = len(details)
+        _record_fetch_success(calculated_rows > 0)
+        if calculated_rows == 0:
+            _send_health_status("历史观察记录没有足够的固定周期行情数据")
             return
-        win_rate = (win_count / total_count) * 100
-        avg_profit = total_profit / total_count
+
+        metric_lines = []
+        for horizon in REVIEW_HORIZONS:
+            values = metrics[horizon]
+            if not values:
+                metric_lines.append(f"T+{horizon}: 暂无完整样本")
+                continue
+            win_rate = sum(value > 0 for value in values) / len(values) * 100
+            avg_profit = sum(values) / len(values)
+            metric_lines.append(
+                f"T+{horizon}: 样本 {len(values)}，"
+                f"正收益占比 {win_rate:.0f}%，平均收益 {avg_profit:+.2f}%"
+            )
+
         now = datetime.now(settings.SHA_TZ)
         skipped_count = len(skipped_reasons)
         skipped_text = ""
@@ -74,17 +117,18 @@ def run_review() -> None:
                 + "）"
             )
         caution_lines = []
-        if total_count < 3:
+        if calculated_rows < 3:
             caution_lines.append("样本较少，统计结果仅作粗略参考。")
-        if skipped_count > total_count:
+        if skipped_count > calculated_rows:
             caution_lines.append("行情缺失较多，本次复盘可信度较低。")
         caution_text = ""
         if caution_lines:
             caution_text = "\n提示: " + " ".join(caution_lines)
         summary = (
-            f"最近记录: {total_rows} 条，成功计算: {total_count} 条，跳过: {skipped_count} 条\n"
-            f"观察样本正收益占比: {win_rate:.0f}%\n"
-            f"观察样本平均变化: {avg_profit:+.2f}%\n"
+            f"最近记录: {total_rows} 条，成功计算: {calculated_rows} 条，"
+            f"跳过: {skipped_count} 条\n"
+            + "\n".join(metric_lines)
+            + "\n"
             + "\n".join(details)
             + skipped_text
             + caution_text

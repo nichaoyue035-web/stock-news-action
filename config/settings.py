@@ -27,6 +27,7 @@ USER_AGENTS = [
 URL_NEWS = "https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_100_1_.html"
 URL_FUNDS = "https://push2.eastmoney.com/api/qt/clist/get"
 URL_QUOTE = "https://push2.eastmoney.com/api/qt/stock/get"
+URL_HISTORY = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
 
 # 海外默认信息源（可通过环境变量覆盖）
 # 旧地址 feeds.reuters.com 已经不稳定/失效，改为 Reuters Agency 新 feed 结构

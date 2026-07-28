@@ -7,6 +7,7 @@ import random
 import re
 import time
 from datetime import timedelta
+from difflib import SequenceMatcher
 from typing import Any, Optional
 import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
@@ -14,6 +15,7 @@ from urllib.parse import urlparse
 import requests
 
 from config import settings
+from core.models import NewsItem, validate_news_item
 from utils.ai_client import get_ai_response
 from utils.notifier import log_error, log_info
 from utils.safety import redact_sensitive_text
@@ -558,7 +560,7 @@ def infer_related_sectors(item: dict[str, Any]) -> list[str]:
     return sectors
 
 
-def _normalize_news_item(item: dict[str, Any]) -> dict[str, Any]:
+def _normalize_news_item(item: dict[str, Any]) -> NewsItem:
     """Add structured metadata while preserving existing news fields."""
     enriched = dict(item)
     enriched.setdefault("summary", str(enriched.get("digest") or "").strip())
@@ -581,12 +583,19 @@ def _normalize_news_item(item: dict[str, Any]) -> dict[str, Any]:
     enriched["related_sectors"] = (
         related if isinstance(related, list) else infer_related_sectors(enriched)
     )
-    return enriched
+    return enriched  # type: ignore[return-value]
 
 
-def enrich_news_items(news_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def enrich_news_items(news_items: list[dict[str, Any]]) -> list[NewsItem]:
     """Enrich a news list with category, importance, scope and sector tags."""
-    return [_normalize_news_item(item) for item in news_items]
+    enriched: list[NewsItem] = []
+    for item in news_items:
+        valid, reason = validate_news_item(item)
+        if not valid:
+            log_error(f"⚠️ 丢弃无效新闻记录: {reason}")
+            continue
+        enriched.append(_normalize_news_item(item))
+    return enriched
 
 
 def _extract_json_object(raw_text: str) -> Optional[dict[str, Any]]:
@@ -610,9 +619,20 @@ def _normalize_external_news(
         record_data_source_health("DeepSeek 翻译", "skipped", "无外部新闻", 0)
         return []
 
-    batch = news_items[:max_translate_items]
+    candidate_indexes = [
+        idx
+        for idx, item in enumerate(news_items)
+        if _needs_translation(item)
+    ][:max_translate_items]
+    if not candidate_indexes:
+        record_data_source_health(
+            "DeepSeek 翻译", "skipped", "本地检测均为中文", len(news_items)
+        )
+        return news_items
+
     prompt_rows = []
-    for idx, item in enumerate(batch):
+    for idx in candidate_indexes:
+        item = news_items[idx]
         prompt_rows.append(
             {
                 "idx": idx,
@@ -648,7 +668,10 @@ def _normalize_external_news(
             mapped[idx] = row
 
     normalized: list[dict[str, Any]] = []
-    for idx, item in enumerate(batch):
+    for idx, item in enumerate(news_items):
+        if idx not in candidate_indexes:
+            normalized.append(item)
+            continue
         row = mapped.get(idx)
         if not row:
             normalized.append(item)
@@ -668,7 +691,43 @@ def _normalize_external_news(
         translated_item["translated"] = True
         normalized.append(translated_item)
 
-    return normalized + news_items[max_translate_items:]
+    return normalized
+
+
+def _contains_chinese(text: Any) -> bool:
+    """Detect Chinese locally so translation does not require an AI round trip."""
+    return bool(re.search(r"[\u3400-\u9fff]", str(text or "")))
+
+
+def _needs_translation(item: dict[str, Any]) -> bool:
+    title = str(item.get("title") or "").strip()
+    digest = str(item.get("digest") or "").strip()
+    return (bool(title) and not _contains_chinese(title)) or (
+        bool(digest) and not _contains_chinese(digest)
+    )
+
+
+def _normalized_title_for_similarity(item: dict[str, Any]) -> str:
+    title = str(item.get("title") or "").lower()
+    return re.sub(r"[\W_]+", "", title, flags=re.UNICODE)
+
+
+def _semantic_duplicate_candidate_indexes(
+    news_items: list[dict[str, Any]], threshold: float = 0.72
+) -> set[int]:
+    """Return only locally similar items that warrant AI semantic comparison."""
+    normalized = [_normalized_title_for_similarity(item) for item in news_items]
+    candidates: set[int] = set()
+    for left_idx, left_title in enumerate(normalized):
+        if len(left_title) < 8:
+            continue
+        for right_idx in range(left_idx + 1, len(normalized)):
+            right_title = normalized[right_idx]
+            if len(right_title) < 8:
+                continue
+            if SequenceMatcher(None, left_title, right_title).ratio() >= threshold:
+                candidates.update((left_idx, right_idx))
+    return candidates
 
 
 def _refine_news(
@@ -698,8 +757,16 @@ def _deduplicate_semantic_news(
         )
         return news_items
 
+    candidate_indexes = _semantic_duplicate_candidate_indexes(news_items)
+    if not candidate_indexes:
+        record_data_source_health(
+            "DeepSeek 去重", "skipped", "本地未发现疑似重复", len(news_items)
+        )
+        return news_items
+
     prompt_rows = []
-    for idx, item in enumerate(news_items):
+    for idx in sorted(candidate_indexes):
+        item = news_items[idx]
         prompt_rows.append(
             {
                 "idx": idx,
@@ -726,18 +793,20 @@ def _deduplicate_semantic_news(
         log_error("⚠️ DeepSeek 语义去重返回格式异常，使用标题去重结果")
         return news_items
 
-    keep_indexes: list[int] = []
+    keep_indexes: list[int] = [
+        idx for idx in range(len(news_items)) if idx not in candidate_indexes
+    ]
     seen_indexes: set[int] = set()
     for raw_idx in raw_keep:
         try:
             idx = int(raw_idx)
         except (TypeError, ValueError):
             continue
-        if 0 <= idx < len(news_items) and idx not in seen_indexes:
+        if idx in candidate_indexes and idx not in seen_indexes:
             seen_indexes.add(idx)
             keep_indexes.append(idx)
 
-    if not keep_indexes:
+    if not seen_indexes:
         record_data_source_health("DeepSeek 去重", "failed", "未返回有效索引", 0)
         log_error("⚠️ DeepSeek 语义去重未返回有效索引，使用标题去重结果")
         return news_items
@@ -1022,3 +1091,54 @@ def get_stock_quote(code: Any) -> Optional[dict[str, str]]:
         record_data_source_health("个股行情", "failed", reason, 0)
         log_error(f"❌ 个股行情获取失败 [{code}]: {reason}")
         return None
+
+
+def get_stock_history_closes(
+    code: Any, start_date: str, max_sessions: int = 20
+) -> list[dict[str, Any]]:
+    """Return post-recommendation daily closes for fixed-horizon evaluation."""
+    sec_id = f"1.{code}" if str(code).startswith("6") else f"0.{code}"
+    try:
+        start_day = datetime.datetime.strptime(str(start_date), "%Y-%m-%d")
+    except ValueError:
+        record_data_source_health("历史行情", "failed", "起始日期无效", 0)
+        return []
+    end_day = start_day + timedelta(days=max_sessions * 3 + 10)
+    params = {
+        "secid": sec_id,
+        "klt": "101",
+        "fqt": "1",
+        "beg": start_day.strftime("%Y%m%d"),
+        "end": end_day.strftime("%Y%m%d"),
+        "lmt": str(max_sessions + 15),
+        "fields1": "f1,f2,f3,f4,f5,f6",
+        "fields2": "f51,f52,f53,f54,f55,f56",
+    }
+    try:
+        resp = requests.get(
+            settings.URL_HISTORY,
+            headers=get_random_header(),
+            params=params,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        klines = (resp.json().get("data") or {}).get("klines") or []
+        closes: list[dict[str, Any]] = []
+        for raw_row in klines:
+            columns = str(raw_row or "").split(",")
+            if len(columns) < 3 or columns[0] <= str(start_date):
+                continue
+            try:
+                close = float(columns[2])
+            except (TypeError, ValueError):
+                continue
+            closes.append({"date": columns[0], "close": close})
+            if len(closes) >= max_sessions:
+                break
+        record_data_source_health("历史行情", "success", "", len(closes))
+        return closes
+    except Exception as exc:
+        reason = _redact_sensitive_text(exc)
+        record_data_source_health("历史行情", "failed", reason, 0)
+        log_error(f"❌ 历史行情获取失败 [{code}]: {reason}")
+        return []

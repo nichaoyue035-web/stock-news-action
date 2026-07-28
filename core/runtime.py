@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
+import os
+from datetime import datetime
 from functools import wraps
 from typing import Any, Callable
 
+from config import settings
 from core.data_fetcher import get_data_source_health
 from utils.notifier import log_info, send_tg
 
@@ -93,6 +97,7 @@ def _print_run_summary() -> None:
         return
 
     summary["status"] = _derive_run_status(summary)
+    summary["finished_at"] = datetime.now(settings.SHA_TZ).isoformat()
     print("[RUN SUMMARY]")
     for key in (
         "mode",
@@ -113,6 +118,22 @@ def _print_run_summary() -> None:
         elif isinstance(value, bool):
             value = str(value).lower()
         print(f"{key}={value}")
+    _persist_run_summary(summary)
+
+
+def _persist_run_summary(summary: dict[str, Any]) -> None:
+    """Atomically persist a secret-free heartbeat for VPS health checks."""
+    status_file = settings.RUN_STATUS_FILE
+    temp_file = f"{status_file}.tmp"
+    try:
+        status_dir = os.path.dirname(status_file)
+        if status_dir:
+            os.makedirs(status_dir, exist_ok=True)
+        with open(temp_file, "w", encoding="utf-8") as file:
+            json.dump(summary, file, ensure_ascii=False, indent=2)
+        os.replace(temp_file, status_file)
+    except OSError as exc:
+        log_info(f"运行状态保存失败: {exc.__class__.__name__}")
 
 
 def _with_run_summary(mode_value: str | Callable[..., str]):
