@@ -384,7 +384,15 @@ def test_funds_sends_result_to_primary_bot(monkeypatch):
     )
     monkeypatch.setattr(funds, "get_news", lambda minutes: [])
     monkeypatch.setattr(
-        analyzer, "_get_ai_response_with_health", lambda *args, **kwargs: "资金摘要"
+        analyzer,
+        "_get_ai_response_with_health",
+        lambda *args, **kwargs: (
+            "【资金结论】资金信号需要持续性确认。\n"
+            "【确认度】仅为单日数据。\n"
+            "【传导路径】资金流向可能影响短期预期。\n"
+            "【A股映射】观察半导体与地产。\n"
+            "【后续验证】核对次日成交和价格。"
+        ),
     )
     monkeypatch.setattr(
         runtime,
@@ -396,6 +404,10 @@ def test_funds_sends_result_to_primary_bot(monkeypatch):
 
     assert len(sent_messages) == 1
     assert "主力资金雷达" in sent_messages[0][0]
+    assert "【资金温度】" in sent_messages[0][0]
+    assert "流入且上涨（同向确认）" in sent_messages[0][0]
+    assert "【新闻催化】" in sent_messages[0][0]
+    assert "【可能影响】【资金结论】" in sent_messages[0][0]
     assert sent_messages[0][1] == {}
 
 
@@ -421,6 +433,96 @@ def test_funds_sends_empty_data_health_status_to_primary_bot(monkeypatch):
         "token": None,
         "chat_id": None,
     }
+
+
+def test_periodic_separates_news_facts_from_structured_impact(monkeypatch):
+    import core.analyzer as analyzer
+    import core.analyzers.periodic as periodic
+    import core.runtime as runtime
+
+    sent_messages = []
+    news = [
+        {
+            "title": "央行发布最新流动性操作",
+            "digest": "公开市场操作信息",
+            "source": "eastmoney",
+            "time_str": "10:30",
+            "link": "https://example.com/periodic",
+            "related_sectors": ["金融"],
+        }
+    ]
+    monkeypatch.setattr(periodic, "get_news", lambda minutes: news)
+    monkeypatch.setattr(
+        analyzer,
+        "_get_ai_response_with_health",
+        lambda *args, **kwargs: (
+            "【盘中主线】流动性预期仍待确认。\n"
+            "【确认度】仅有单条公开信息。\n"
+            "【传导路径】可能影响利率预期。\n"
+            "【A股映射】观察金融。\n"
+            "【后续验证】核对午后成交。"
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "send_tg",
+        lambda content, **kwargs: sent_messages.append((content, kwargs)) or True,
+    )
+
+    periodic.run_periodic({})
+
+    assert len(sent_messages) == 1
+    assert "【盘中事实】" in sent_messages[0][0]
+    assert "[10:30｜eastmoney] 央行发布最新流动性操作" in sent_messages[0][0]
+    assert "【可能影响】【盘中主线】" in sent_messages[0][0]
+
+
+def test_after_market_separates_news_facts_from_structured_impact(monkeypatch):
+    import core.analyzer as analyzer
+    import core.analyzers.after_market as after_market
+    import core.runtime as runtime
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 7, 28, 15, 20, tzinfo=tz)
+
+    sent_messages = []
+    news = [
+        {
+            "title": "半导体行业发布供需数据",
+            "digest": "行业库存变化",
+            "source": "eastmoney",
+            "time_str": "15:00",
+            "link": "https://example.com/after-market",
+            "related_sectors": ["半导体"],
+        }
+    ]
+    monkeypatch.setattr(after_market, "datetime", FixedDatetime)
+    monkeypatch.setattr(after_market, "get_news", lambda minutes: news)
+    monkeypatch.setattr(
+        analyzer,
+        "_get_ai_response_with_health",
+        lambda *args, **kwargs: (
+            "【收盘结论】行业信息仍需后续数据确认。\n"
+            "【确认度】当前仅有单一来源。\n"
+            "【传导路径】可能影响库存预期。\n"
+            "【A股映射】观察半导体。\n"
+            "【后续验证】核对订单和价格。"
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "send_tg",
+        lambda content, **kwargs: sent_messages.append((content, kwargs)) or True,
+    )
+
+    after_market.run_after_market({})
+
+    assert len(sent_messages) == 1
+    assert "【收盘事实】" in sent_messages[0][0]
+    assert "[15:00｜eastmoney] 半导体行业发布供需数据" in sent_messages[0][0]
+    assert "【可能影响】【收盘结论】" in sent_messages[0][0]
 
 
 def test_monitor_classifies_market_news_without_ai():
