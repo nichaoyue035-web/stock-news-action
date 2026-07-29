@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from difflib import SequenceMatcher
 from datetime import datetime, time, timedelta
+import re
 from typing import Any, Optional
 from urllib.parse import urlparse
 
@@ -15,6 +17,7 @@ from utils.notifier import log_info
 SMALL_COMPANY_NEWS_CATEGORIES = {"company"}
 SMALL_COMPANY_NEWS_IMPORTANCE = {"low"}
 MONITOR_ALLOWED_IMPORTANCE = {"high", "高", "偏高"}
+MARKET_ALERT_DEDUP_SEVERITIES = {"重要", "紧急"}
 BLACK_SWAN_EVENT_KEYWORDS = (
     "战争爆发",
     "宣布开战",
@@ -516,6 +519,64 @@ def _is_news_in_alert_window(item: dict[str, Any], now: datetime) -> bool:
     )
 
 
+def _normalise_market_event_text(value: Any) -> str:
+    """Normalise a headline or digest without using AI or source identity."""
+    text = str(value or "").casefold()
+    return re.sub(r"[\W_]+", "", text)
+
+
+def _market_event_numbers(value: str) -> set[str]:
+    """Keep material numbers so a numerical update is not treated as a repeat."""
+    return set(re.findall(r"\d+(?:[.,]\d+)?%?", value))
+
+
+def _same_market_event(current: dict[str, Any], previous: dict[str, Any]) -> bool:
+    """Return True only for conservative, cross-source duplicate market events."""
+    current_link = str(current.get("link") or "").strip()
+    previous_link = str(previous.get("link") or "").strip()
+    if current_link and current_link == previous_link:
+        return True
+
+    current_title = _normalise_market_event_text(current.get("title"))
+    previous_title = _normalise_market_event_text(previous.get("title"))
+    if not current_title or not previous_title:
+        return False
+
+    current_digest = _normalise_market_event_text(current.get("digest"))
+    previous_digest = _normalise_market_event_text(previous.get("digest"))
+    current_text = current_title + current_digest
+    previous_text = previous_title + previous_digest
+    if _market_event_numbers(current_text) != _market_event_numbers(previous_text):
+        return False
+
+    title_ratio = SequenceMatcher(None, current_title, previous_title).ratio()
+    if current_title == previous_title:
+        if not current_digest or not previous_digest:
+            return True
+        return SequenceMatcher(None, current_digest, previous_digest).ratio() >= 0.75
+
+    combined_ratio = SequenceMatcher(None, current_text, previous_text).ratio()
+    return title_ratio >= 0.92 and combined_ratio >= 0.88
+
+
+def _is_recent_market_alert_duplicate(
+    store: MonitorStore,
+    item: dict[str, Any],
+    severity: str,
+    now: datetime,
+) -> bool:
+    """Suppress only same-severity, recently delivered important/urgent events."""
+    if severity not in MARKET_ALERT_DEDUP_SEVERITIES:
+        return False
+    recent_payloads = store.recent_sent_alert_payloads(
+        alert_type="news",
+        severity=severity,
+        now=now,
+        lookback_minutes=settings.MONITOR_MARKET_ALERT_DEDUP_MINUTES,
+    )
+    return any(_same_market_event(item, payload) for payload in recent_payloads)
+
+
 def _safe_float(value: Any) -> Optional[float]:
     try:
         return float(str(value).replace("%", "").strip())
@@ -1004,9 +1065,16 @@ def _run_monitor_cycle(store: MonitorStore, now: datetime) -> None:
             eligible_news.append((item, severity))
 
     sent_news = 0
+    suppressed_duplicates = 0
     for item, severity in eligible_news:
         if sent_news >= 3:
             break
+        if _is_recent_market_alert_duplicate(store, item, severity, now):
+            suppressed_duplicates += 1
+            log_info(
+                "市场提醒去重：同级别近期已发送相同或高度相似事件，跳过重复投递"
+            )
+            continue
         event_key = news_event_key(item)
         if _claim_and_send(
             store,
@@ -1042,6 +1110,9 @@ def _run_monitor_cycle(store: MonitorStore, now: datetime) -> None:
         reason=(
             "no new eligible news or watchlist price signal"
             if not sent_total
-            else f"news_sent={sent_news}, quote_samples={quote_count}, price_sent={sent_price}"
+            else (
+                f"news_sent={sent_news}, news_dedup_suppressed={suppressed_duplicates}, "
+                f"quote_samples={quote_count}, price_sent={sent_price}"
+            )
         ),
     )

@@ -736,6 +736,126 @@ def test_monitor_sends_each_important_news_event_once(monkeypatch, tmp_path):
     assert "重要市场提醒" in sent_messages[0]
 
 
+def test_monitor_deduplicates_cross_source_important_and_urgent_alerts(
+    monkeypatch, tmp_path
+):
+    import core.analyzers.monitor as monitor
+    import core.runtime as runtime
+
+    now = datetime.now(settings.SHA_TZ)
+    items = [
+        {
+            "title": "国务院发布资本市场新政策",
+            "digest": "政策文件明确优化资本市场长期资金入市安排。",
+            "source": "eastmoney",
+            "link": "https://eastmoney.com/news/policy",
+            "datetime": now,
+            "category": "policy",
+            "importance": "high",
+            "market_scope": "市场",
+            "related_sectors": ["金融"],
+        },
+        {
+            "title": "国务院发布资本市场新政策",
+            "digest": "政策文件明确优化资本市场长期资金入市安排。",
+            "source": "reuters",
+            "link": "https://reuters.com/news/policy",
+            "datetime": now,
+            "category": "policy",
+            "importance": "high",
+            "market_scope": "市场",
+            "related_sectors": ["金融"],
+        },
+        {
+            "title": "Payment system outage disrupts market settlement",
+            "digest": "The outage interrupted market settlement services.",
+            "source": "reuters",
+            "link": "https://reuters.com/news/outage",
+            "datetime": now,
+            "category": "overseas",
+            "importance": "high",
+            "market_scope": "海外",
+            "related_sectors": ["金融 IT"],
+        },
+        {
+            "title": "Payment system outage disrupts market settlement",
+            "digest": "The outage interrupted market settlement services.",
+            "source": "bbc",
+            "link": "https://bbc.com/news/outage",
+            "datetime": now,
+            "category": "overseas",
+            "importance": "high",
+            "market_scope": "海外",
+            "related_sectors": ["金融 IT"],
+        },
+    ]
+    sent_messages = []
+
+    monkeypatch.setattr(settings, "MONITOR_DB_FILE", str(tmp_path / "monitor.db"))
+    monkeypatch.setattr(settings, "MONITOR_MARKET_ALERT_DEDUP_MINUTES", 60)
+    monkeypatch.setattr(settings, "WATCHLIST_CODES", [])
+    monkeypatch.setattr(monitor, "get_news", lambda *args, **kwargs: items)
+    monkeypatch.setattr(
+        runtime,
+        "send_tg",
+        lambda content, **kwargs: sent_messages.append(content) or True,
+    )
+    monkeypatch.setattr(runtime, "CURRENT_RUN_SUMMARY", None)
+
+    monitor.run_monitor({})
+
+    assert len(sent_messages) == 2
+    assert sum("重要市场提醒" in message for message in sent_messages) == 1
+    assert sum("紧急市场提醒" in message for message in sent_messages) == 1
+
+
+def test_monitor_keeps_material_numerical_news_update(monkeypatch, tmp_path):
+    import core.analyzers.monitor as monitor
+    import core.runtime as runtime
+
+    now = datetime.now(settings.SHA_TZ)
+    items = [
+        {
+            "title": "央行宣布准备金率调整",
+            "digest": "本次下调 0.25 个百分点。",
+            "source": "eastmoney",
+            "link": "https://eastmoney.com/news/reserve-one",
+            "datetime": now,
+            "category": "policy",
+            "importance": "high",
+            "market_scope": "市场",
+            "related_sectors": ["金融"],
+        },
+        {
+            "title": "央行宣布准备金率调整",
+            "digest": "本次下调 0.50 个百分点。",
+            "source": "reuters",
+            "link": "https://reuters.com/news/reserve-two",
+            "datetime": now,
+            "category": "policy",
+            "importance": "high",
+            "market_scope": "市场",
+            "related_sectors": ["金融"],
+        },
+    ]
+    sent_messages = []
+
+    monkeypatch.setattr(settings, "MONITOR_DB_FILE", str(tmp_path / "monitor.db"))
+    monkeypatch.setattr(settings, "MONITOR_MARKET_ALERT_DEDUP_MINUTES", 60)
+    monkeypatch.setattr(settings, "WATCHLIST_CODES", [])
+    monkeypatch.setattr(monitor, "get_news", lambda *args, **kwargs: items)
+    monkeypatch.setattr(
+        runtime,
+        "send_tg",
+        lambda content, **kwargs: sent_messages.append(content) or True,
+    )
+    monkeypatch.setattr(runtime, "CURRENT_RUN_SUMMARY", None)
+
+    monitor.run_monitor({})
+
+    assert len(sent_messages) == 2
+
+
 def test_monitor_sends_unsent_news_after_per_cycle_limit(monkeypatch, tmp_path):
     import core.analyzers.monitor as monitor
     import core.runtime as runtime

@@ -322,3 +322,36 @@ class MonitorStore:
                 """,
                 (_as_utc_text(failed_at), str(error or "未知错误")[:160], alert_key),
             )
+
+    def recent_sent_alert_payloads(
+        self,
+        *,
+        alert_type: str,
+        severity: str,
+        now: datetime,
+        lookback_minutes: int,
+    ) -> list[dict[str, Any]]:
+        """Return recent successful payloads for deterministic pre-send deduplication."""
+        cutoff = _as_utc_text(now - timedelta(minutes=max(1, lookback_minutes)))
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload
+                FROM monitor_alerts
+                WHERE alert_type = ? AND severity = ? AND status = 'sent'
+                    AND sent_at >= ?
+                ORDER BY sent_at DESC
+                LIMIT 100
+                """,
+                (alert_type, severity, cutoff),
+            ).fetchall()
+
+        payloads: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict):
+                payloads.append(payload)
+        return payloads
