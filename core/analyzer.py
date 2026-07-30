@@ -158,6 +158,14 @@ def run_analysis(mode: str) -> None:
 
         run_periodic(prompts)
         return
+    if mode in {"us_premarket", "us_periodic"}:
+        from core.analyzers.us_market import run_us_periodic, run_us_premarket
+
+        if mode == "us_premarket":
+            run_us_premarket(prompts)
+        else:
+            run_us_periodic(prompts)
+        return
     if mode == "after_market":
         from core.analyzers.after_market import run_after_market
 

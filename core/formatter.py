@@ -159,7 +159,7 @@ def _infer_market_importance(item: dict[str, Any]) -> str:
 
 
 def _title_icon(title: str) -> str:
-    for keyword, icon in (("资金", "💰"), ("国际", "🌍"), ("宏观", "🌍"), ("每日复盘", "🌇"), ("盘中茶歇", "🍵"), ("市场信息", "📰"), ("市场观察", "🔎"), ("观察标的", "👀"), ("复盘辅助", "🧾")):
+    for keyword, icon in (("美股", "🇺🇸"), ("资金", "💰"), ("国际", "🌍"), ("宏观", "🌍"), ("每日复盘", "🌇"), ("盘中茶歇", "🍵"), ("市场信息", "📰"), ("市场观察", "🔎"), ("观察标的", "👀"), ("复盘辅助", "🧾")):
         if keyword in title:
             return icon
     return "📌"

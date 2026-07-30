@@ -502,6 +502,95 @@ def test_periodic_separates_news_facts_from_structured_impact(monkeypatch):
     assert "【可能影响】【盘中主线】" in sent_messages[0][0]
 
 
+def test_us_premarket_filters_a_share_only_news_and_sends_us_brief(monkeypatch):
+    import core.analyzer as analyzer
+    import core.analyzers.us_market as us_market
+    import core.runtime as runtime
+
+    sent_messages = []
+    prompts = []
+    news = [
+        {
+            "title": "A股公司发布日常公告",
+            "digest": "仅涉及A股公司",
+            "source": "eastmoney",
+            "time_str": "08:30",
+            "link": "https://example.com/a-share",
+            "market_scope": "A股",
+            "category": "company",
+            "related_sectors": ["金融"],
+        },
+        {
+            "title": "SEC 披露｜NVDA｜8-K",
+            "digest": "公司提交最新披露文件",
+            "source": "SEC EDGAR",
+            "time_str": "08:40",
+            "link": "https://example.com/sec",
+            "market_scope": "美股",
+            "category": "company",
+            "related_sectors": ["半导体"],
+        },
+    ]
+    monkeypatch.setattr(us_market, "get_news", lambda minutes: news)
+    monkeypatch.setattr(
+        analyzer,
+        "_get_ai_response_with_health",
+        lambda prompt, **kwargs: prompts.append(prompt)
+        or (
+            "【隔夜焦点】SEC 披露已发布。\n"
+            "【今日催化】暂未确认。\n"
+            "【市场映射】关注半导体，需看后续文件。\n"
+            "【开盘后验证】核对公告正文。"
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "send_tg",
+        lambda content, **kwargs: sent_messages.append((content, kwargs)) or True,
+    )
+
+    us_market.run_us_premarket({})
+
+    assert len(sent_messages) == 1
+    assert "美股盘前简报" in sent_messages[0][0]
+    assert "【盘前事实】" in sent_messages[0][0]
+    assert "【影响范围】美股 / 全球联动" in sent_messages[0][0]
+    assert "SEC 披露｜NVDA｜8-K" in prompts[0]
+    assert "A股公司发布日常公告" not in prompts[0]
+
+
+def test_us_midday_brief_skips_when_no_us_relevant_news(monkeypatch):
+    import core.analyzers.us_market as us_market
+    import core.runtime as runtime
+
+    sent_messages = []
+    monkeypatch.setattr(
+        us_market,
+        "get_news",
+        lambda minutes: [
+            {
+                "title": "A股公司发布日常公告",
+                "digest": "仅涉及A股公司",
+                "source": "eastmoney",
+                "time_str": "13:30",
+                "link": "https://example.com/a-share",
+                "market_scope": "A股",
+                "category": "company",
+                "related_sectors": [],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        runtime,
+        "send_tg",
+        lambda content, **kwargs: sent_messages.append((content, kwargs)) or True,
+    )
+
+    us_market.run_us_periodic({})
+
+    assert sent_messages == []
+
+
 def test_after_market_separates_news_facts_from_structured_impact(monkeypatch):
     import core.analyzer as analyzer
     import core.analyzers.after_market as after_market

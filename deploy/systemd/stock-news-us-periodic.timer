@@ -1,0 +1,10 @@
+[Unit]
+Description=Run stock-news US midday brief
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 12:30:00 America/New_York
+Persistent=false
+Unit=stock-news@us_periodic.service
+
+[Install]
+WantedBy=timers.target

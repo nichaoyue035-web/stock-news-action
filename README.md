@@ -50,6 +50,8 @@
 | `funds` | 生成主力资金雷达 | 直接展示行业资金流与涨跌是否同向，再对匹配新闻做可验证的结构化推演 |
 | `monitor` | 分钟级双通道监控 | 用规则即时推送黑天鹅硬风险，并对自选股记录分钟行情、提醒短时大幅异动；推送到监控频道 |
 | `periodic` | 盘中茶歇简报 | 先展示可核对的盘中新闻事实，再给出待验证的市场主线与观察条件 |
+| `us_premarket` | 美股盘前简报 | 美东盘前提炼隔夜新闻、当日催化与开盘后验证点；没有行情数据时不编造期货或盘前价格 |
+| `us_periodic` | 美股盘中茶歇 | 美东午间提炼开盘后仍有效的新闻主线、风险变量和下午验证点；不假设实时盘面表现 |
 | `after_market` | 每日收盘复盘 | 先展示当日可核对新闻事实，再给出收盘结构与下个交易日验证点；周末跳过发送 |
 | `radar` | 实时标的雷达 | 对配置的 A 股和可选美股数据建立自动短时追踪，按确认、失效或到期推送状态 |
 | `global` | 三小时市场总结 | 汇总近 3 小时国内外的重要市场变化，提炼事实、传导路径和后续验证点；无实质变化时不推送 |
@@ -146,6 +148,8 @@ python main.py global
 ```bash
 python main.py funds
 python main.py periodic
+python main.py us_premarket
+python main.py us_periodic
 python main.py after_market
 python main.py track
 python main.py review
@@ -336,6 +340,8 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now stock-news-monitor.timer
 sudo systemctl enable --now stock-news-daily.timer
 sudo systemctl enable --now stock-news-periodic.timer
+sudo systemctl enable --now stock-news-us-premarket.timer
+sudo systemctl enable --now stock-news-us-periodic.timer
 sudo systemctl enable --now stock-news-after-market.timer
 sudo systemctl enable --now stock-news-funds.timer
 sudo systemctl enable --now stock-news-daily-health.timer
