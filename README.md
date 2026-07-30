@@ -89,7 +89,9 @@
 | `PRICE_ALERT_MAX_COMPARISON_GAP_MINUTES` | 允许与上一笔行情采样比较的最大间隔 | `monitor` 行情通道；默认 `3` 分钟，避免服务中断后误报 |
 | `RADAR_A_SHARE_CODES` | 雷达专用 A 股代码，逗号分隔 | `radar`；与原有 `WATCHLIST_CODES` 分离，避免改变现有监控行为 |
 | `RADAR_A_SHARE_MINUTE_CHANGE_PCT` | A 股短时异动阈值（百分比） | `radar`；默认 `1.5` |
+| `RADAR_A_SHARE_HOT_POOL_ENABLED` | 启用 A 股热门低价线索池 | `radar`；仅从成交额热门池筛选低价强势股，不是全 A 股扫描 |
 | `POLYGON_API_KEY` | Polygon 美股行情 Key | `radar` 的美股扫描与单标的追踪；不配置则跳过美股，不伪装为正常取数 |
+| `YFINANCE_EXPERIMENTAL_RADAR_ENABLED` | 启用 Yahoo 美股实验性线索池 | `radar`；最多读取 Yahoo 候选页的 250 条返回结果，默认每 10 分钟一次、每轮最多推送 1 条，不保证完整或实时 |
 | `YFINANCE_DEV_TICKERS` | Yahoo Finance 开发测试代码，逗号分隔 | 仅 `yfinance_dev`；最多 20 只，不属于生产雷达配置 |
 | `YFINANCE_DEV_BROAD_SCAN` | Yahoo 广泛市场测试开关 | 仅 `yfinance_dev`；设为 `1` 时运行最多 250 条候选的筛选页面，不可与 `YFINANCE_DEV_TICKERS` 同时设置 |
 | `YFINANCE_DEV_EVENT_MAX_CANDIDATES` | 事件层最多核验的候选数 | 仅 `yfinance_dev`；默认 `20`，避免对候选页面逐只高频请求 |
@@ -242,6 +244,11 @@ python main.py yfinance_dev
 此测试由 Yahoo 的筛选器先过滤美国股票，再最多返回 250 条结果；第二层再按顺序最多核验
 20 个候选的近期新闻。它只能用于验证“广泛候选池 + 事件证据”的字段与规则，不能证明未
 返回的股票没有异动，更不能替代正式全市场实时行情。
+
+若只要求低成本的“有用线索”而不是完整实时覆盖，可在 VPS 环境文件中显式开启
+`RADAR_A_SHARE_HOT_POOL_ENABLED=1` 与 `YFINANCE_EXPERIMENTAL_RADAR_ENABLED=1`。
+前者只从 A 股成交额热门池中筛选低价强势股；后者只读取 Yahoo 返回的候选页，并在消息中
+标注实验性数据限制。两者都不是完整市场扫描，不应用于自动交易。
 
 ## 7. 数据文件与提示词
 

@@ -1,8 +1,8 @@
-"""Explicitly non-production Yahoo Finance development probe.
+"""Yahoo Finance helpers for local probes and an explicit experimental radar source.
 
-This module is intentionally isolated from the radar's production providers.
-It only fetches explicitly named symbols, prints an inspectable local report,
-and never sends Telegram messages or creates tracking candidates.
+The ``yfinance_dev`` mode only prints an inspectable local report. The radar
+may reuse the capped screener helpers only when its separate experimental
+environment flag is enabled.
 """
 
 from __future__ import annotations

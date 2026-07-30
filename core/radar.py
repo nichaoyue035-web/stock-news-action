@@ -7,6 +7,8 @@ from typing import Any, Optional
 
 from config import settings
 from core.data_fetcher import (
+    get_data_source_health,
+    get_hot_stocks_data,
     get_stock_quote,
     get_us_stock_news,
     get_us_stock_quote,
@@ -14,7 +16,16 @@ from core.data_fetcher import (
 )
 from core.interaction_auth import is_authorized_interaction
 from core.radar_store import RadarStore
-from core.runtime import _record_fetch_success, _set_run_summary, _send_tg_with_summary
+from core.runtime import (
+    _record_fetch_success,
+    _set_run_reason,
+    _set_run_summary,
+    _send_tg_with_summary,
+)
+from core.yfinance_dev import (
+    fetch_yfinance_broad_market_candidates,
+    fetch_yfinance_dev_quotes,
+)
 from utils.notifier import log_error, log_info, send_tg_interactive
 
 
@@ -32,6 +43,10 @@ def _safe_float(value: Any) -> Optional[float]:
 def _short_text(value: Any, limit: int = 420) -> str:
     text = " ".join(str(value or "").split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _is_experimental_yahoo_source(attributes: dict[str, Any]) -> bool:
+    return str(attributes.get("source") or "").startswith("yfinance-")
 
 
 def _normalise_a_share_codes(raw_codes: list[str]) -> list[str]:
@@ -124,6 +139,11 @@ def _format_candidate_message(candidate: dict[str, Any]) -> str:
     catalyst = _short_text(
         attributes.get("catalyst") or "暂未核对到可用的新闻催化。"
     )
+    data_limit = (
+        "Yahoo 实验性候选池，可能延迟、遗漏或限流；仅作线索，不代表完整市场。"
+        if _is_experimental_yahoo_source(attributes)
+        else ""
+    )
     lines = [
         f"🟡 实时标的雷达｜{_market_label(candidate['market'])}｜自动追踪中",
         f"标的：{candidate['symbol']} {candidate['name']}",
@@ -138,6 +158,7 @@ def _format_candidate_message(candidate: dict[str, Any]) -> str:
         "",
         "【催化核对】",
         catalyst,
+        *(["", "【数据限制】", data_limit] if data_limit else []),
         "",
         "【确认条件】",
         "短时价格未明显回落，且下一轮成交/行情数据仍可核对。",
@@ -295,9 +316,121 @@ def _scan_a_share_candidates(store: RadarStore, now: datetime) -> tuple[int, int
     return sampled, candidates
 
 
+def _scan_a_share_hot_pool(store: RadarStore, now: datetime) -> tuple[int, int]:
+    """Use the high-turnover A-share pool as a coarse low-price scout."""
+    if not settings.RADAR_A_SHARE_HOT_POOL_ENABLED:
+        return 0, 0
+    if not _is_a_share_trading_session(now):
+        return 0, 0
+
+    hot_stocks = get_hot_stocks_data()
+    if not hot_stocks:
+        health = get_data_source_health().get("热门股数据", {})
+        if health.get("status") == "failed":
+            _set_run_reason("A 股热门池抓取失败", status="partial")
+        return 0, 0
+
+    sampled = 0
+    candidates = 0
+    for item in hot_stocks:
+        price = _safe_float(item.get("price"))
+        pct = _safe_float(item.get("pct"))
+        if price is None or pct is None:
+            continue
+        if not (
+            settings.RADAR_A_SHARE_HOT_POOL_MIN_PRICE
+            <= price
+            <= settings.RADAR_A_SHARE_HOT_POOL_MAX_PRICE
+            and pct >= settings.RADAR_A_SHARE_HOT_POOL_MIN_DAY_CHANGE_PCT
+        ):
+            continue
+        sampled += 1
+        if candidates >= settings.RADAR_A_SHARE_HOT_POOL_MAX_NEW_CANDIDATES:
+            continue
+        raw_code = str(item.get("code") or "").strip()
+        if not raw_code.isdigit():
+            continue
+        code = raw_code.zfill(6)
+        if store.has_active_candidate("CN", code, now):
+            continue
+        if _create_candidate(
+            store,
+            market="CN",
+            symbol=code,
+            name=str(item.get("name") or code),
+            price=price,
+            pct=pct,
+            volume=None,
+            attributes={
+                "signal": "低价高换手上涨",
+                "evidence": (
+                    f"成交额热门池中的低价股；股价 {price:.2f} 元，"
+                    f"当日 {pct:+.2f}%。"
+                ),
+                "catalyst": "仅确认价格、涨幅和热门成交额排名；需自行核对公告、基本面与风险信息。",
+                "source": "eastmoney-hot-pool",
+            },
+            now=now,
+        ):
+            candidates += 1
+    return sampled, candidates
+
+
+def _scan_yahoo_experimental_candidates(
+    store: RadarStore, now: datetime
+) -> tuple[int, int]:
+    """Use Yahoo's capped screener as an explicitly experimental US scout."""
+    if not settings.YFINANCE_EXPERIMENTAL_RADAR_ENABLED:
+        return 0, 0
+    if not _is_us_trading_session(now):
+        return 0, 0
+    if now.minute % settings.YFINANCE_EXPERIMENTAL_RADAR_INTERVAL_MINUTES:
+        return 0, 0
+
+    try:
+        result = fetch_yfinance_broad_market_candidates()
+    except Exception as exc:
+        _set_run_reason(
+            f"Yahoo 实验性候选池抓取失败: {exc.__class__.__name__}", status="partial"
+        )
+        log_error(f"❌ Yahoo 实验性候选池抓取失败: {exc.__class__.__name__}")
+        return 0, 0
+
+    candidates = 0
+    for quote in result.get("candidates", []):
+        if candidates >= settings.YFINANCE_EXPERIMENTAL_RADAR_MAX_NEW_CANDIDATES:
+            break
+        symbol = str(quote.get("symbol") or "")
+        if not symbol or store.has_active_candidate("US", symbol, now):
+            continue
+        if _create_candidate(
+            store,
+            market="US",
+            symbol=symbol,
+            name=str(quote.get("name") or symbol),
+            price=float(quote["price"]),
+            pct=float(quote["pct"]),
+            volume=float(quote.get("volume") or 0),
+            attributes={
+                "signal": "低价股放量上涨（实验性筛选）",
+                "dollar_volume": float(quote["dollar_volume"]),
+                "evidence": (
+                    f"Yahoo 候选池：股价 ${float(quote['price']):.2f}；"
+                    f"当日 {float(quote['pct']):+.2f}%；"
+                    f"成交额约 ${float(quote['dollar_volume']) / 1_000_000:.1f}M。"
+                ),
+                "catalyst": "仅确认 Yahoo 的价格与成交字段；未把新闻标题视为已确认催化。",
+                "source": "yfinance-experimental-screener",
+            },
+            now=now,
+        ):
+            candidates += 1
+    return int(result.get("returned_count") or 0), candidates
+
+
 def _scan_us_candidates(store: RadarStore, now: datetime) -> tuple[int, int]:
     if not settings.POLYGON_API_KEY:
-        return 0, 0
+        return _scan_yahoo_experimental_candidates(store, now)
     if not _is_us_trading_session(now):
         return 0, 0
     snapshots = get_us_stock_snapshots()
@@ -361,6 +494,22 @@ def _fetch_candidate_quote(candidate: dict[str, Any]) -> Optional[dict[str, Any]
             "price": price,
             "pct": pct,
             "volume": None,
+        }
+    attributes = candidate.get("attributes") or {}
+    if _is_experimental_yahoo_source(attributes):
+        try:
+            quotes = fetch_yfinance_dev_quotes([str(candidate["symbol"])])
+        except Exception as exc:
+            log_error(f"❌ Yahoo 实验性追踪报价失败: {exc.__class__.__name__}")
+            return None
+        if not quotes:
+            log_error("❌ Yahoo 实验性追踪报价为空")
+            return None
+        quote = quotes[0]
+        return {
+            "name": str(quote.get("name") or candidate["name"]),
+            "price": quote.get("price"),
+            "pct": quote.get("pct"),
         }
     return get_us_stock_quote(str(candidate["symbol"]))
 
@@ -496,7 +645,12 @@ def handle_radar_callback(callback: dict[str, Any], now: Optional[datetime] = No
 def run_radar() -> None:
     """Run one candidate-scan and tracking cycle; no order is ever submitted."""
     now = datetime.now(settings.SHA_TZ)
-    if not settings.RADAR_A_SHARE_CODES and not settings.POLYGON_API_KEY:
+    if not (
+        settings.RADAR_A_SHARE_CODES
+        or settings.RADAR_A_SHARE_HOT_POOL_ENABLED
+        or settings.POLYGON_API_KEY
+        or settings.YFINANCE_EXPERIMENTAL_RADAR_ENABLED
+    ):
         raise RuntimeError(
             "雷达未配置任何行情来源：请设置 RADAR_A_SHARE_CODES 或 POLYGON_API_KEY"
         )
@@ -509,6 +663,7 @@ def run_radar() -> None:
         a_market_open = _is_a_share_trading_session(now)
         us_market_open = _is_us_trading_session(now)
         a_sampled, a_candidates = _scan_a_share_candidates(store, now)
+        a_hot_sampled, a_hot_candidates = _scan_a_share_hot_pool(store, now)
         us_sampled, us_candidates = _scan_us_candidates(store, now)
         if a_market_open and settings.RADAR_A_SHARE_CODES and not a_sampled:
             raise RuntimeError("A 股雷达在交易时段未获取到有效行情")
@@ -519,8 +674,8 @@ def run_radar() -> None:
         _record_fetch_success(True)
         log_info(
             "雷达完成: "
-            f"a_sampled={a_sampled}, us_sampled={us_sampled}, "
-            f"new_candidates={a_candidates + us_candidates}, active_processed={processed}, "
+            f"a_sampled={a_sampled}, a_hot_sampled={a_hot_sampled}, us_sampled={us_sampled}, "
+            f"new_candidates={a_candidates + a_hot_candidates + us_candidates}, active_processed={processed}, "
             f"confirmed={confirmed}, invalidated={invalidated}, expired={expired}"
         )
     except Exception as exc:

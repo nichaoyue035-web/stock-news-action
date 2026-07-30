@@ -1486,7 +1486,7 @@ def get_hot_stocks_data() -> list[dict[str, Any]]:
         "invt": "2",
         "fid": "f6",
         "fs": "m:0+t:6,m:0+t:80",
-        "fields": "f12,f14,f3,f6",
+        "fields": "f12,f14,f2,f3,f6",
     }
     try:
         resp = requests.get(
@@ -1510,6 +1510,7 @@ def get_hot_stocks_data() -> list[dict[str, Any]]:
                 {
                     "name": item.get("f14", "未知"),
                     "code": item.get("f12", ""),
+                    "price": item.get("f2", "-"),
                     "pct": f"{item.get('f3', '-')}%",
                     "amount": f"{round(amount / 100000000, 1)}亿",
                     "category": "company",

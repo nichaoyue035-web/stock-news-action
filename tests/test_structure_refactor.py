@@ -659,6 +659,82 @@ def test_normalise_watchlist_codes_keeps_valid_unique_codes():
     ]
 
 
+def test_radar_scans_a_share_hot_pool_as_low_price_lead(monkeypatch, tmp_path):
+    import core.radar as radar
+    from core.radar_store import RadarStore
+
+    store = RadarStore(str(tmp_path / "radar.db"))
+    store.initialize()
+    now = datetime(2026, 7, 30, 10, 0, tzinfo=settings.SHA_TZ)
+    created = []
+
+    monkeypatch.setattr(settings, "RADAR_A_SHARE_HOT_POOL_ENABLED", True)
+    monkeypatch.setattr(settings, "RADAR_A_SHARE_HOT_POOL_MAX_NEW_CANDIDATES", 1)
+    monkeypatch.setattr(
+        radar,
+        "get_hot_stocks_data",
+        lambda: [
+            {"code": "000001", "name": "测试股", "price": "8.5", "pct": "6.2%"},
+            {"code": "000002", "name": "第二只", "price": "9.5", "pct": "8.0%"},
+        ],
+    )
+    monkeypatch.setattr(
+        radar,
+        "_create_candidate",
+        lambda _store, **kwargs: created.append(kwargs) or True,
+    )
+
+    sampled, candidates = radar._scan_a_share_hot_pool(store, now)
+
+    assert sampled == 2
+    assert candidates == 1
+    assert created[0]["symbol"] == "000001"
+    assert created[0]["attributes"]["source"] == "eastmoney-hot-pool"
+
+
+def test_radar_scans_yahoo_experimental_pool_on_interval(monkeypatch, tmp_path):
+    import core.radar as radar
+    from core.radar_store import RadarStore
+
+    store = RadarStore(str(tmp_path / "radar.db"))
+    store.initialize()
+    now = datetime(2026, 7, 30, 22, 10, tzinfo=settings.SHA_TZ)
+    created = []
+
+    monkeypatch.setattr(settings, "YFINANCE_EXPERIMENTAL_RADAR_ENABLED", True)
+    monkeypatch.setattr(settings, "YFINANCE_EXPERIMENTAL_RADAR_INTERVAL_MINUTES", 10)
+    monkeypatch.setattr(settings, "YFINANCE_EXPERIMENTAL_RADAR_MAX_NEW_CANDIDATES", 1)
+    monkeypatch.setattr(
+        radar,
+        "fetch_yfinance_broad_market_candidates",
+        lambda: {
+            "returned_count": 12,
+            "candidates": [
+                {
+                    "symbol": "TEST",
+                    "name": "Test Corp",
+                    "price": 2.5,
+                    "pct": 12.0,
+                    "volume": 1_000_000,
+                    "dollar_volume": 2_500_000,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        radar,
+        "_create_candidate",
+        lambda _store, **kwargs: created.append(kwargs) or True,
+    )
+
+    sampled, candidates = radar._scan_yahoo_experimental_candidates(store, now)
+
+    assert sampled == 12
+    assert candidates == 1
+    assert created[0]["market"] == "US"
+    assert created[0]["attributes"]["source"] == "yfinance-experimental-screener"
+
+
 def test_monitor_fast_fetch_skips_ai_preprocessing(monkeypatch):
     import core.data_fetcher as data_fetcher
 
