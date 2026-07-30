@@ -35,6 +35,7 @@ def _start_run_summary(mode: str) -> None:
         "ai_called": False,
         "telegram_attempted": False,
         "telegram_sent": False,
+        "quality": {},
         "status": None,
         "reason": "",
     }
@@ -92,6 +93,18 @@ def _record_fetch_success(success: bool) -> None:
     _set_run_summary(data_fetch_success=success)
 
 
+def _record_quality_counts(**counts: int) -> None:
+    """Attach small, secret-free pipeline counts to the current run heartbeat."""
+    clean_counts: dict[str, int] = {}
+    for name, value in counts.items():
+        try:
+            clean_counts[str(name)] = max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    if clean_counts:
+        _set_run_summary(quality=clean_counts)
+
+
 def _derive_run_status(summary: dict[str, Any]) -> str:
     if summary.get("status"):
         return str(summary["status"])
@@ -130,6 +143,7 @@ def _print_run_summary() -> None:
         "ai_called",
         "telegram_attempted",
         "telegram_sent",
+        "quality",
         "status",
         "duration_seconds",
         "reason",

@@ -203,15 +203,17 @@ def handle_news_tracking_callback(
     if str(chat.get("id") or "") != str(tracker.get("telegram_chat_id") or ""):
         return "该按钮不属于当前提醒消息。"
     if action == "stop":
-        return (
-            "已停止该事件的后续跟踪。"
-            if store.close_news_tracker(tracking_id, "用户停止追踪")
-            else "该事件跟踪已经结束。"
-        )
+        if not store.close_news_tracker(tracking_id, "用户停止追踪"):
+            return "该事件跟踪已经结束。"
+        from core.metrics import record_feedback_metric
+
+        record_feedback_metric("news", "stop")
+        return "已停止该事件的后续跟踪。"
     if action != str(NEWS_TRACK_MINUTES):
         return "不允许的事件跟踪时长。"
-    return (
-        "已开启 2 小时事件跟踪；系统按监控周期核对已接入新闻源，有新的相关标题才会推送。"
-        if store.activate_news_tracker(tracking_id, NEWS_TRACK_MINUTES, now)
-        else "该事件跟踪已经结束。"
-    )
+    if not store.activate_news_tracker(tracking_id, NEWS_TRACK_MINUTES, now):
+        return "该事件跟踪已经结束。"
+    from core.metrics import record_feedback_metric
+
+    record_feedback_metric("news", "continue_tracking")
+    return "已开启 2 小时事件跟踪；系统按监控周期核对已接入新闻源，有新的相关标题才会推送。"

@@ -184,7 +184,11 @@ def run_monitor(_prompts: dict[str, str]) -> None:
 
 def _run_monitor_cycle(store: MonitorStore, now: datetime) -> None:
     """Process one claimed monitor cycle after the overlapping-run guard succeeds."""
-    from core.runtime import _print_monitor_filter_summary, _record_news_summary
+    from core.runtime import (
+        _print_monitor_filter_summary,
+        _record_news_summary,
+        _record_quality_counts,
+    )
 
     news = get_news(
         settings.MONITOR_NEWS_LOOKBACK_MINUTES,
@@ -261,6 +265,15 @@ def _run_monitor_cycle(store: MonitorStore, now: datetime) -> None:
 
     quote_count, sent_price = _run_watchlist_monitor(store, now)
     sent_total = sent_news + sent_price + health_sent + tracking_updates + tracking_ended
+    _record_quality_counts(
+        input_items=input_items,
+        timely_items=after_time_filter,
+        eligible_items=len(eligible_news),
+        new_items=recorded_news,
+        duplicate_alerts_suppressed=suppressed_duplicates,
+        alerts_sent=sent_total,
+        quote_samples=quote_count,
+    )
     _print_monitor_filter_summary(
         input_items=input_items,
         after_time_filter=after_time_filter,

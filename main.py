@@ -124,8 +124,14 @@ def _print_health_status(mode: str | None = None) -> None:
         _fatal(f"❌ {exc}")
     max_age_minutes = int(os.getenv("HEALTH_MAX_AGE_MINUTES", "30"))
     print(json.dumps(status, ensure_ascii=False, indent=2))
-    if status.get("status") == "failed":
+    run_status = status.get("status")
+    if run_status == "failed":
         _fatal("❌ 最近一次任务执行失败")
+    if run_status == "partial":
+        reason = str(status.get("reason") or "存在未完成的数据源或处理步骤")
+        _fatal(f"⚠️ 最近一次任务仅部分完成: {reason}")
+    if run_status != "success":
+        _fatal(f"❌ 最近一次任务状态异常: {run_status or '未知'}")
     if age_seconds > max_age_minutes * 60:
         _fatal(f"❌ 运行状态已过期: {age_seconds / 60:.0f} 分钟")
 

@@ -152,6 +152,28 @@ def test_daily_health_reports_stale_status_as_failure(monkeypatch, tmp_path):
     assert "🔴 需要检查" in sent_messages[0][0]
 
 
+def test_single_mode_health_rejects_partial_result(monkeypatch, tmp_path):
+    import core.runtime as runtime
+
+    monkeypatch.setattr(settings, "RUN_STATUS_DIR", str(tmp_path / "runtime_status"))
+    status_file = Path(runtime.get_run_status_file("monitor"))
+    status_file.parent.mkdir(parents=True)
+    status_file.write_text(
+        json.dumps(
+            {
+                "mode": "monitor",
+                "finished_at": datetime.now(settings.SHA_TZ).isoformat(),
+                "status": "partial",
+                "reason": "海外 RSS 部分失败",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit):
+        main._print_health_status("monitor")
+
+
 def test_runtime_summary_writes_configured_status_file(monkeypatch, tmp_path):
     import core.runtime as runtime
 
@@ -217,7 +239,12 @@ def test_runtime_returns_nonzero_for_recorded_partial_result(monkeypatch, tmp_pa
 
 
 def test_runtime_metrics_aggregate_modes_and_source_failures(monkeypatch, tmp_path):
-    from core.metrics import format_metrics, read_metrics, record_run_metrics
+    from core.metrics import (
+        format_metrics,
+        read_metrics,
+        record_feedback_metric,
+        record_run_metrics,
+    )
 
     monkeypatch.setattr(settings, "METRICS_FILE", str(tmp_path / "metrics.json"))
     record_run_metrics(
@@ -229,6 +256,7 @@ def test_runtime_metrics_aggregate_modes_and_source_failures(monkeypatch, tmp_pa
             "data_fetch_success": True,
             "telegram_attempted": False,
             "telegram_sent": False,
+            "quality": {"input_items": 5, "alerts_sent": 1},
         },
         {"海外 RSS": {"status": "success", "count": 2}},
     )
@@ -250,6 +278,15 @@ def test_runtime_metrics_aggregate_modes_and_source_failures(monkeypatch, tmp_pa
     assert metrics["modes"]["monitor"]["partial"] == 1
     assert metrics["sources"]["海外 RSS"]["failed"] == 1
     assert "最近异常数据源：" in format_metrics("monitor")
+    assert "输入 5" in format_metrics("monitor")
+
+    record_feedback_metric("radar", "mute")
+    record_feedback_metric("radar", "mute")
+    record_feedback_metric("news", "continue_tracking")
+
+    metrics = read_metrics()
+    assert metrics["feedback"]["radar"]["mute"] == 2
+    assert "用户反馈：" in format_metrics()
 
 
 def test_failure_alert_uses_the_other_configured_telegram_channel(monkeypatch):
@@ -1180,6 +1217,7 @@ def test_news_tracking_callback_starts_and_stops_for_authorized_user(
 
     database = tmp_path / "monitor.db"
     monkeypatch.setattr(settings, "MONITOR_DB_FILE", str(database))
+    monkeypatch.setattr(settings, "METRICS_FILE", str(tmp_path / "metrics.json"))
     monkeypatch.setattr(settings, "INTERACTION_ALLOWED_USER_IDS", [999])
     now = datetime(2026, 7, 28, 10, 0, tzinfo=settings.SHA_TZ)
     item = {

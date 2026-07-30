@@ -139,10 +139,19 @@ export TG_INTERACTION_ALLOWED_USER_IDS="your_telegram_user_id"
 
 ## 6. 本地运行方法
 
-安装依赖：
+首次创建独立开发环境并安装依赖：
 
 ```bash
-pip install -r requirements.txt
+make setup
+```
+
+日常验证统一使用项目入口，避免误用系统 Python：
+
+```bash
+make test      # 全部测试
+make lint      # 静态检查
+make validate  # 部署清单检查
+make check     # 依次执行以上三项
 ```
 
 运行不同模式：
@@ -168,6 +177,8 @@ python main.py radar
 python main.py maintenance
 python main.py metrics
 ```
+
+`python main.py metrics monitor` 会额外显示本轮和累计的新闻筛选漏斗、已送达提醒、行情样本及异常数据源。Telegram 中“继续跟踪、停止、静默”的有效操作会以不含用户身份和消息内容的汇总计数显示，用于判断提醒是否需要收紧或优化。
 
 ### 五分钟监控说明
 

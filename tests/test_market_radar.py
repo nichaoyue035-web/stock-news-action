@@ -15,6 +15,7 @@ def _a_share_time() -> datetime:
 def _make_store(tmp_path, monkeypatch) -> RadarStore:
     database = tmp_path / "radar.db"
     monkeypatch.setattr(settings, "MONITOR_DB_FILE", str(database))
+    monkeypatch.setattr(settings, "METRICS_FILE", str(tmp_path / "metrics.json"))
     store = RadarStore(str(database))
     store.initialize()
     return store
