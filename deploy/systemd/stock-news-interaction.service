@@ -2,6 +2,7 @@
 Description=Listen for stock-news Telegram radar buttons
 After=network-online.target
 Wants=network-online.target
+OnFailure=stock-news-failure@%n.service
 
 [Service]
 Type=simple
@@ -9,6 +10,7 @@ User=stockbot
 WorkingDirectory=/opt/stock-news-action
 EnvironmentFile=/etc/stock-news-action.env
 StateDirectory=stock-news-action
+UMask=0077
 ExecStart=/opt/stock-news-action/.venv/bin/python main.py telegram_listener
 Restart=always
 RestartSec=5

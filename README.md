@@ -48,17 +48,18 @@
 | --- | --- | --- |
 | `daily` | 生成股市全景内参 | 盘前查看过去 24 小时左右的重要新闻、主线、利好利空和情绪判断 |
 | `funds` | 生成主力资金雷达 | 直接展示行业资金流与涨跌是否同向，再对匹配新闻做可验证的结构化推演 |
-| `monitor` | 分钟级双通道监控 | 用规则即时推送黑天鹅硬风险，并对自选股记录分钟行情、提醒短时大幅异动；推送到监控频道 |
+| `monitor` | 五分钟双通道监控 | 用规则即时推送黑天鹅硬风险，并对自选股记录近五分钟行情、提醒短时大幅异动；推送到监控频道 |
 | `periodic` | 盘中茶歇简报 | 先展示可核对的盘中新闻事实，再给出待验证的市场主线与观察条件 |
 | `us_premarket` | 美股盘前简报 | 美东盘前提炼隔夜新闻、当日催化与开盘后验证点；没有行情数据时不编造期货或盘前价格 |
 | `us_periodic` | 美股盘中茶歇 | 美东午间提炼开盘后仍有效的新闻主线、风险变量和下午验证点；不假设实时盘面表现 |
 | `after_market` | 每日收盘复盘 | 先展示当日可核对新闻事实，再给出收盘结构与下个交易日验证点；周末跳过发送 |
-| `radar` | 实时标的雷达 | 对配置的 A 股和可选美股数据建立自动短时追踪，按确认、失效或到期推送状态 |
+| `radar` | 实时标的雷达 | 对配置的 A 股和可选美股数据建立自动短时追踪，按确认、失效或到期推送状态；使用与 `track` 相同的主机器人 |
 | `global` | 三小时市场总结 | 汇总近 3 小时国内外的重要市场变化，提炼事实、传导路径和后续验证点；无实质变化时不推送 |
 | `recommend` | AI 每日股票观察 | 从热门股票和近期新闻中选择一个观察标的，保存到 `stock_pick.json` 并写入 `history.csv` |
 | `track` | 跟踪已选观察标的 | 读取 `stock_pick.json` 中的标的，获取最新行情并生成简短跟踪观点 |
 | `review` | 历史表现回看 | 读取 `history.csv`，按 T+1、T+5、T+20 交易日统一计算正收益占比和平均收益 |
 | `daily_health` | VPS 每日健康提醒 | 向监控 Telegram 频道推送最近一次任务状态；失败、异常或状态过期会明确标红 |
+| `maintenance` | 状态库维护 | 清理过期新闻、报价、候选和告警，并生成一个本地 SQLite 一致性备份 |
 | `telegram_listener` | 雷达交互监听服务 | 常驻接收雷达消息按钮，用于延长或停止已自动开始的追踪 |
 | `yfinance_dev` | Yahoo Finance 两层开发探针 | 第一层查询行情候选，第二层补充近期可追溯事件证据；仅输出本地测试报告，不发送 Telegram、不创建候选、不应部署到 VPS |
 
@@ -71,8 +72,8 @@
 | 变量名 | 作用 | 使用场景 |
 | --- | --- | --- |
 | `DEEPSEEK_API_KEY` | DeepSeek API Key，用于新闻翻译、摘要和分析 | `daily`、`funds`、`periodic`、`after_market`、`global`、`recommend`、`track` |
-| `TG_BOT_TOKEN` | Telegram 主推送 Bot Token | 主频道推送，例如 `daily`、`funds`、`periodic`、`after_market`、`recommend`、`track`、`review` |
-| `TG_CHAT_ID` | Telegram 主推送 Chat ID | 主频道推送 |
+| `TG_BOT_TOKEN` | Telegram 主推送 Bot Token | 主频道推送，例如 `daily`、`funds`、`periodic`、`after_market`、`recommend`、`track`、`review`、`radar` |
+| `TG_CHAT_ID` | Telegram 主推送 Chat ID | 主频道推送（也用于 `radar` 按钮交互） |
 | `TG_BOT_TOKEN_MONITOR` | Telegram 监控频道 Bot Token | 监控频道推送，例如 `monitor`、`global` |
 | `TG_CHAT_ID_MONITOR` | Telegram 监控频道 Chat ID | 监控频道推送 |
 | `GLOBAL_NEWS_RSS` | 默认海外 RSS 地址，可覆盖内置海外 RSS 源 | 海外/外部新闻抓取；未配置时使用代码内默认值 |
@@ -88,10 +89,20 @@
 | `MONITOR_MARKET_ALERT_DEDUP_MINUTES` | 紧急市场提醒的跨来源去重窗口 | `monitor`；默认 `60` 分钟；相同或高度相似事件只投递一次，新数字或更高紧急级别仍会投递 |
 | `PRICE_ALERT_MINUTE_CHANGE_PCT` | 短时价格异动阈值（百分比） | `monitor` 行情通道；默认 `1.0` |
 | `PRICE_ALERT_COOLDOWN_MINUTES` | 同一股票同方向异动的提醒冷却时间 | `monitor` 行情通道；默认 `15` 分钟 |
-| `PRICE_ALERT_MAX_COMPARISON_GAP_MINUTES` | 允许与上一笔行情采样比较的最大间隔 | `monitor` 行情通道；默认 `3` 分钟，避免服务中断后误报 |
+| `PRICE_ALERT_MAX_COMPARISON_GAP_MINUTES` | 允许与上一笔行情采样比较的最大间隔 | `monitor` 行情通道；默认 `6` 分钟，匹配五分钟定时器及其抖动，并避免服务中断后误报 |
+| `STATE_DIR` | 持久化运行与观察状态目录 | VPS 建议 `/var/lib/stock-news-action`；未设置时仍使用仓库目录，`recommend/track/review` 的状态会一并保存到这里 |
+| `STATE_BACKUP_DIR` | SQLite 本地备份目录 | 默认 `STATE_DIR/backups`；每天维护任务生成一个一致性 `.sqlite3` 备份，仍建议将该目录异地复制 |
+| `RUN_STATUS_DIR` | 分模式健康状态目录 | 每个模式独立保存心跳，避免某个无关任务覆盖另一个模式的失败状态 |
+| `HEALTH_REQUIRED_MODES` | 每日健康提醒必须检查的模式 | 默认 `daily,monitor`；逗号分隔，例如 `daily,monitor,radar` |
+| `CN_MARKET_HOLIDAYS` / `US_MARKET_HOLIDAYS` | 中美交易所例外休市日 | `YYYY-MM-DD` 逗号分隔；周末自动跳过，列出的日期不会被误判为数据失败 |
+| `DB_RETENTION_DAYS` | 监控 SQLite 历史保留天数 | 默认 `30`；只清理过期新闻、报价、已结束候选和告警，活跃追踪不受影响 |
+| `DB_BACKUP_RETENTION_DAYS` | 本地 SQLite 备份保留天数 | 默认 `14`；只删除维护任务生成的旧备份 |
+| `HTTP_GET_MAX_ATTEMPTS` / `HTTP_GET_RETRY_BASE_SECONDS` | 数据 GET 请求的临时失败重试 | 默认 `2` 次、`0.5` 秒基础退避；只重试网络错误、429 和 5xx，不会重试 Telegram 发送以避免重复消息 |
 | `RADAR_A_SHARE_CODES` | 雷达专用 A 股代码，逗号分隔 | `radar`；与原有 `WATCHLIST_CODES` 分离，避免改变现有监控行为 |
 | `RADAR_A_SHARE_MINUTE_CHANGE_PCT` | A 股短时异动阈值（百分比） | `radar`；默认 `1.5` |
-| `RADAR_A_SHARE_HOT_POOL_ENABLED` | 启用 A 股热门低价线索池 | `radar`；仅从成交额热门池筛选低价强势股，不是全 A 股扫描 |
+| `RADAR_A_SHARE_HOT_POOL_ENABLED` | 启用 A 股热门低价线索池 | `radar`；仅从成交额热门池筛选低价、当日涨幅 `2–8%` 的早期走强标的，不是全 A 股扫描 |
+| `RADAR_MAX_CANDIDATES_PER_SYMBOL_PER_SESSION` | 同一标的单个交易日的首次推送上限 | `radar`；默认 `1`，只计初始 Telegram 消息已成功送达的候选 |
+| `RADAR_SYMBOL_MUTE_DAYS` | 点击“不再推送”后的静默天数 | `radar`；默认 `7`，会停止当前追踪并抑制后续同标的候选 |
 | `POLYGON_API_KEY` | Polygon 美股行情 Key | `radar` 的美股扫描与单标的追踪；不配置则跳过美股，不伪装为正常取数 |
 | `YFINANCE_EXPERIMENTAL_RADAR_ENABLED` | 启用 Yahoo 美股实验性线索池 | `radar`；最多读取 Yahoo 候选页的 250 条返回结果，默认每 10 分钟一次、每轮最多推送 1 条，不保证完整或实时 |
 | `YFINANCE_DEV_TICKERS` | Yahoo Finance 开发测试代码，逗号分隔 | 仅 `yfinance_dev`；最多 20 只，不属于生产雷达配置 |
@@ -100,7 +111,7 @@
 | `YFINANCE_DEV_EVENT_ITEMS_PER_SYMBOL` | 每只候选最多读取的 Yahoo 新闻数 | 仅 `yfinance_dev`；默认 `3` |
 | `YFINANCE_DEV_EVENT_MAX_AGE_HOURS` | 事件层新闻的最大时效 | 仅 `yfinance_dev`；默认 `24` 小时，过期或无时间新闻不作近期证据 |
 | `US_RADAR_MIN_PRICE` / `US_RADAR_MAX_PRICE` | 美股候选价格区间 | 默认 `$1–5` |
-| `US_RADAR_MIN_DAY_CHANGE_PCT` | 美股当日最小涨幅（百分比） | 默认 `10` |
+| `US_RADAR_MIN_DAY_CHANGE_PCT` / `US_RADAR_MAX_DAY_CHANGE_PCT` | 美股低价股的早期涨幅区间 | 默认 `3–15`；在成交额达标时更早入池，同时过滤已大幅拉升的后段行情 |
 | `US_RADAR_MIN_DOLLAR_VOLUME` | 美股最小成交额（美元） | 默认 `1000000`，过滤低流动性噪音 |
 | `TG_INTERACTION_ALLOWED_USER_IDS` | 可操作雷达按钮的 Telegram 用户 ID | 群聊必须配置；私聊默认仅允许该私聊账号 |
 
@@ -154,16 +165,24 @@ python main.py after_market
 python main.py track
 python main.py review
 python main.py radar
+python main.py maintenance
+python main.py metrics
 ```
 
-### 分钟级监控说明
+### 五分钟监控说明
 
 `monitor` 的一次运行会同时执行两条独立链路：
 
-- **新闻链路**：只推送黑天鹅级突发和待核实硬风险；政策、宏观、行业或市场范围的重要变化进入每三小时一次的市场总结，不在分钟级重复推送。
-- **行情链路**：仅在 A 股常规交易时段采集 `WATCHLIST_CODES`，将价格写入本地 SQLite；与上一笔不超过 3 分钟的采样相比，变动达到 `PRICE_ALERT_MINUTE_CHANGE_PCT` 才推送。首次运行只建立基线，不会产生行情异动提醒。
+- **新闻链路**：只推送黑天鹅级突发和待核实硬风险；政策、宏观、行业或市场范围的重要变化进入每三小时一次的市场总结，不在五分钟监控中重复推送。
+- **行情链路**：仅在 A 股常规交易时段采集 `WATCHLIST_CODES`，将价格写入本地 SQLite；与上一笔不超过 6 分钟的采样相比，变动达到 `PRICE_ALERT_MINUTE_CHANGE_PCT` 才推送。首次运行只建立基线，不会产生行情异动提醒。
 
-监控状态、原始新闻、行情采样和 Telegram 投递状态保存在 `monitor.db`，因此运行服务时必须把该文件放在持久化磁盘中。Telegram 成功后才会把告警标记为已送达；失败记录会保留，事件再次进入提醒窗口时会重试。系统也会防止两轮监控重叠执行。
+监控状态、原始新闻、行情采样和 Telegram 投递状态保存在 `monitor.db`，因此运行服务时必须把该文件放在持久化磁盘中。Telegram 成功后才会把告警标记为已送达；失败记录会保留，事件再次进入提醒窗口时会重试。系统也会防止两轮监控重叠执行。`maintenance` 每天会清理超过保留期的历史并生成 SQLite 一致性备份和恢复压缩包；本地备份不能替代异地备份。
+
+### 异地恢复备份
+
+默认不会上传任何数据。若服务器已配置 [`rclone`](https://rclone.org/) 的加密远端，将环境文件中的 `OFFSITE_BACKUP_ENABLED=true` 和 `OFFSITE_BACKUP_RCLONE_TARGET=remote:stock-news-action` 一并设置。每次 `maintenance` 会上传一个包含一致性 `monitor.db`、历史、观察标的、运行状态和指标的 `stock-news-state-*.zip`。上传失败、超时、远端未配置或未安装 rclone 都会让维护任务失败并触发既有故障通知，绝不将其报告为异地备份成功。
+
+恢复前先停止相关服务并下载所需压缩包；先用 `unzip -t` 校验，再将其中的 `monitor.db`、`history.csv`、`stock_pick.json`、运行状态文件恢复到 `STATE_DIR`。恢复后重新启动服务并执行 `python main.py health monitor`。建议先在非生产目录演练恢复，且不要把环境文件或 Telegram/AI 密钥放入任何备份。
 
 “紧急市场提醒”会在投递前检查最近 60 分钟已成功发送的内容：同链接、同标题，或标题和摘要都高度相似时只发一次，即使来自不同媒体。原始新闻仍会完整保存；数字、比例、金额等事实变化仍会作为新进展投递。
 
@@ -171,7 +190,11 @@ python main.py radar
 
 紧急市场提醒只保留事件、关键事实、市场含义、关注变量和原文链接；分类、重要性、影响范围等重复字段不会单独展示。市场含义只说明当前最关键的传导问题，关注变量用于指出下一步应核对什么。所有内容均为条件化观察，不构成买卖建议。
 
-为获得分钟级体验，应由常驻 VPS 服务每分钟调用一次：
+### Telegram 消息样式
+
+日常摘要、资金雷达、盘中/盘后简报、海外简报、健康提醒和追踪更新都使用同一阅读顺序：标题与时间、必要的来源、重点、怎么看或下一步，最后才放原文。分类、重要性、影响范围等内部标签不再逐项展示；旧版 AI 输出里的方括号标题也会自动转成普通短标题。
+
+生产定时器每五分钟调用一次，比较窗口已与该周期对齐：
 
 ```bash
 python main.py monitor
@@ -189,16 +212,17 @@ GitHub Actions 更适合作为手动回退或日常任务，不应作为此监�
 ### 互动式实时标的雷达
 
 `radar` 是独立于原 `monitor` 的候选追踪链路，不会自动交易，也不会修改
-`WATCHLIST_CODES`。它的流程是：
+`WATCHLIST_CODES`。它与 `track` 使用同一个主机器人和聊天；流程是：
 
 1. 对 `RADAR_A_SHARE_CODES` 每分钟建立 A 股报价基线；只有短时变动达到
    `RADAR_A_SHARE_MINUTE_CHANGE_PCT` 才建立候选。
-2. 如配置了 `POLYGON_API_KEY`，在美东盘前、盘中和盘后扫描满足价格、涨幅和成交额
+2. 如配置了 `POLYGON_API_KEY`，在美东盘前、盘中和盘后扫描满足价格、早期涨幅区间和成交额
    过滤条件的美股候选；没有可核对新闻时会明确标为“未确认催化”。
 3. 候选一出现即自动追踪，不等待 Telegram 点击。初始窗口内仅在条件暂未失效、触及
    失效阈值或追踪到期时推送一次状态，避免刷屏。
-4. Telegram 按钮只能延长或停止追踪。它不是下单入口，也不会让旧价格直接变成操作指令；
-   只有允许的 Telegram 用户可以点击生效。
+4. 同一标的单个交易日默认只发送一次初始候选；初始消息送达失败不会被误记为已推送。
+   Telegram 可延长或停止本次追踪，也可选择在配置天数内不再推送该标的。它不是下单入口，
+   也不会让旧价格直接变成操作指令；只有允许的 Telegram 用户可以点击生效。
 
 美股首版通过 Polygon 快照接口按分钟取数，因此实际新鲜度受你的 Polygon 套餐和交易所
 数据权限影响。若数据源返回失败，日志会明确报错；未配置 Key 时则只运行 A 股部分。
@@ -211,9 +235,9 @@ python main.py radar
 python main.py telegram_listener
 ```
 
-`telegram_listener` 使用 Telegram 长轮询，不需要向公网开放 Webhook 端口。一个 Bot
-只能有一个监听进程；如果该 Bot 已设置 Webhook，需要先清理 Webhook 或改用该 Webhook
-接收按钮回调。
+`telegram_listener` 使用 Telegram 长轮询，不需要向公网开放 Webhook 端口。它会监听主机器人
+的雷达按钮；启用紧急市场事件跟踪时，也会监听监控机器人的事件按钮。每个 Bot 只能有一个
+监听进程；如果该 Bot 已设置 Webhook，需要先清理 Webhook 或改用该 Webhook 接收按钮回调。
 
 ### Yahoo Finance 开发测试
 
@@ -285,7 +309,7 @@ python main.py daily
 
 除 RSS 外，项目还支持三类专用来源：
 
-- 中国证监会与上交所：只接收明确的监管、交易制度、停复牌、退市等高信号公告。官网列表通常只有日期，没有精确发布时间，因此它们会进入日报/盘中分析，但不会被伪装成刚发生的分钟级提醒。
+- 中国证监会与上交所：只接收明确的监管、交易制度、停复牌、退市等高信号公告。官网列表通常只有日期，没有精确发布时间，因此它们会进入日报/盘中分析，但不会被伪装成刚发生的高频提醒。
 - SEC EDGAR：只跟踪你明确配置的美股代码。SEC 要求自动访问在请求头中声明可联系身份；未配置 `SEC_USER_AGENT` 或观察清单时，系统记录“跳过”而不会假装获取成功。
 - GDELT：用于全球事件发现。GDELT 返回的标题只会带“待核验线索”标记进入内部新闻流，不会直接推送到 Telegram；需要以原始报道或官方公告确认后，才应作为事实使用。
 
@@ -346,19 +370,24 @@ sudo systemctl enable --now stock-news-after-market.timer
 sudo systemctl enable --now stock-news-funds.timer
 sudo systemctl enable --now stock-news-daily-health.timer
 sudo systemctl enable --now stock-news-radar.timer
+sudo systemctl enable --now stock-news-maintenance.timer
 sudo systemctl enable --now stock-news-interaction.service
 systemctl list-timers 'stock-news-*'
 ```
 
-每次任务结束都会原子写入 `RUN_STATUS_FILE`。以下命令会输出最近一次运行摘要；
-如果最近任务失败、状态文件损坏或超过 `HEALTH_MAX_AGE_MINUTES`，命令返回非零状态：
+每次任务结束都会原子写入兼容的 `RUN_STATUS_FILE`，并在 `RUN_STATUS_DIR` 写入该模式独立的状态文件。以下命令会输出最近一次运行摘要；也可指定模式。失败、状态文件损坏或超过 `HEALTH_MAX_AGE_MINUTES` 时命令返回非零状态：
 
 ```bash
 python main.py health
+python main.py health monitor
+python main.py metrics
+python main.py metrics monitor
 ```
 
+`metrics` 会汇总每种任务的成功、部分完成、失败、投递失败次数及最近异常数据源；它只保存运行状态与计数，不保存密钥或消息正文。指标写入 `METRICS_FILE`，与心跳文件一起放在持久化目录中。
+
 `stock-news-daily-health.timer` 会在每天 08:40（上海时间）向监控 Telegram
-频道发送一条健康提醒。它会报告最近任务、数据抓取、上轮 Telegram 投递和状态
+频道发送一条健康提醒。它会检查 `HEALTH_REQUIRED_MODES` 中每个模式独立的任务、数据抓取、上轮 Telegram 投递和状态
 文件年龄；只要发现失败、非成功状态或状态超过 `HEALTH_MAX_AGE_MINUTES`，消息会
 标为异常，并让该次 systemd 任务失败，便于在日志中追踪。
 
@@ -371,6 +400,11 @@ python main.py health
 使用 `stock-news-action@.service` 模板，定时器也必须使用相同前缀：将 `Unit=` 改为
 `stock-news-action@funds.service`，并以 `stock-news-action-funds.timer` 的名称启用。
 资金雷达会使用现有的 `TG_BOT_TOKEN` 和 `TG_CHAT_ID`。
+
+所有 `stock-news@*.service` 及交互监听服务失败时，systemd 会触发
+`stock-news-failure@.service`。该服务优先尝试通过与故障模式不同的已配置 Telegram
+频道通知；若两个频道都不可用，失败仍会保留在 systemd journal 中。生产环境仍建议把
+`STATE_BACKUP_DIR` 异地同步，并接入独立于 Telegram 的主机监控。
 
 市场监控的“紧急市场提醒”使用紧凑格式：先给事件与关键事实，再只指出一个最关键的
 市场含义和一个应核对的变量。三小时市场总结按政策、宏观、资金、行业、公司或海外类别

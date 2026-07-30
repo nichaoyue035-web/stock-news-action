@@ -108,6 +108,7 @@ def _normalise_yfinance_screener_quote(item: Any) -> Optional[dict[str, Any]]:
         or dollar_volume is None
         or not settings.US_RADAR_MIN_PRICE <= price <= settings.US_RADAR_MAX_PRICE
         or pct < settings.US_RADAR_MIN_DAY_CHANGE_PCT
+        or pct > settings.US_RADAR_MAX_DAY_CHANGE_PCT
         or dollar_volume < settings.US_RADAR_MIN_DOLLAR_VOLUME
     ):
         return None
@@ -305,6 +306,9 @@ def fetch_yfinance_broad_market_candidates(
             yfinance.EquityQuery(
                 "gte", ["percentchange", settings.US_RADAR_MIN_DAY_CHANGE_PCT]
             ),
+            yfinance.EquityQuery(
+                "lte", ["percentchange", settings.US_RADAR_MAX_DAY_CHANGE_PCT]
+            ),
             yfinance.EquityQuery("gte", ["dayvolume", minimum_shares]),
         ],
     )
@@ -312,7 +316,7 @@ def fetch_yfinance_broad_market_candidates(
         query,
         size=YFINANCE_BROAD_SCAN_RESULT_CAP,
         sortField="percentchange",
-        sortAsc=False,
+        sortAsc=True,
     )
     if not isinstance(response, dict):
         raise RuntimeError("Yahoo 市场筛选返回格式异常")
@@ -373,6 +377,7 @@ def fetch_yfinance_dev_quotes(
                 settings.US_RADAR_MIN_PRICE <= price <= settings.US_RADAR_MAX_PRICE
                 and pct is not None
                 and pct >= settings.US_RADAR_MIN_DAY_CHANGE_PCT
+                and pct <= settings.US_RADAR_MAX_DAY_CHANGE_PCT
                 and estimated_dollar_volume is not None
                 and estimated_dollar_volume >= settings.US_RADAR_MIN_DOLLAR_VOLUME
             )

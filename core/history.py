@@ -12,6 +12,9 @@ from utils.notifier import log_error
 def _append_history(pick_data: dict[str, Any], start_price: str) -> bool:
     try:
         today_str = datetime.now(settings.SHA_TZ).strftime("%Y-%m-%d")
+        history_dir = os.path.dirname(settings.HISTORY_FILE)
+        if history_dir:
+            os.makedirs(history_dir, exist_ok=True)
         file_exists = os.path.isfile(settings.HISTORY_FILE)
         with open(settings.HISTORY_FILE, "a", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)

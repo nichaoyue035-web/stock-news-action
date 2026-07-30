@@ -1,0 +1,10 @@
+[Unit]
+Description=Prune and back up stock-news monitor state
+
+[Timer]
+OnCalendar=*-*-* 03:25:00 Asia/Shanghai
+Persistent=true
+Unit=stock-news@maintenance.service
+
+[Install]
+WantedBy=timers.target

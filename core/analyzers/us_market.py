@@ -7,6 +7,7 @@ from typing import Any
 
 from config import settings
 from core.data_fetcher import get_news
+from core.market_calendar import is_us_equity_trading_day
 from utils.notifier import log_info
 
 
@@ -59,6 +60,11 @@ def _run_us_market_brief(prompts: dict[str, str], mode: str) -> None:
 
     is_premarket = mode == "us_premarket"
     lookback_minutes = 720 if is_premarket else 240
+    now = datetime.now(settings.US_EASTERN_TZ)
+    if not is_us_equity_trading_day(now):
+        _set_run_reason("market closed", status="success")
+        log_info(f"美股休市，跳过市场简报：{now.strftime('%Y-%m-%d')}")
+        return
     all_news = get_news(lookback_minutes)
     _record_news_summary(all_news)
     if not all_news:
@@ -71,7 +77,6 @@ def _run_us_market_brief(prompts: dict[str, str], mode: str) -> None:
         log_info("美股市场简报：未发现美股或全球联动新闻，跳过推送")
         return
 
-    now = datetime.now(settings.US_EASTERN_TZ)
     news_txt = "\n".join(
         _format_news_prompt_line(item, include_time=True) for item in news[:25]
     )
@@ -90,7 +95,6 @@ def _run_us_market_brief(prompts: dict[str, str], mode: str) -> None:
         return
 
     title = "美股盘前简报" if is_premarket else "美股盘中茶歇"
-    fact_label = "盘前事实" if is_premarket else "盘中事实"
     importance = "中（盘前简报）" if is_premarket else "低（盘中简报）"
     _send_tg_with_summary(
         _format_market_message(
@@ -99,7 +103,7 @@ def _run_us_market_brief(prompts: dict[str, str], mode: str) -> None:
             source=_format_sources(news, "海外 RSS / SEC"),
             category="market",
             importance=importance,
-            summary=f"【{fact_label}】\n{_format_news_facts(news, limit=5)}",
+            summary=f"重点新闻：\n{_format_news_facts(news, limit=5)}",
             impact=content,
             links=_format_links([item.get("link") for item in news[:5]]),
             market_scope="美股 / 全球联动",

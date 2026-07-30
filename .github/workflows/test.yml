@@ -27,3 +27,6 @@ jobs:
 
       - name: Run Ruff
         run: python -m ruff check .
+
+      - name: Validate deployment manifests
+        run: python scripts/validate_deployment.py

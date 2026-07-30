@@ -1,0 +1,10 @@
+{
+  "tickers": [
+    {
+      "ticker": "REPLAY",
+      "lastTrade": {"p": 2.5},
+      "day": {"c": 2.5, "v": 1000000},
+      "todaysChangePerc": 12.3
+    }
+  ]
+}

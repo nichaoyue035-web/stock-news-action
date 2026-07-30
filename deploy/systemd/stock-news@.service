@@ -2,6 +2,7 @@
 Description=Stock news assistant mode %i
 After=network-online.target
 Wants=network-online.target
+OnFailure=stock-news-failure@%n.service
 
 [Service]
 Type=oneshot
@@ -9,6 +10,8 @@ User=stockbot
 WorkingDirectory=/opt/stock-news-action
 EnvironmentFile=/etc/stock-news-action.env
 StateDirectory=stock-news-action
+UMask=0077
+TimeoutStartSec=5min
 ExecStart=/opt/stock-news-action/.venv/bin/python main.py %i
 
 [Install]

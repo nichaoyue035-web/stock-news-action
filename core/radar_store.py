@@ -91,6 +91,18 @@ class RadarStore:
                 CREATE INDEX IF NOT EXISTS idx_radar_candidates_active
                 ON radar_candidates(status, expires_at, market, symbol);
 
+                CREATE TABLE IF NOT EXISTS radar_symbol_suppressions (
+                    market TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    suppressed_until TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (market, symbol)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_radar_symbol_suppressions_until
+                ON radar_symbol_suppressions(suppressed_until);
+
                 CREATE TABLE IF NOT EXISTS radar_locks (
                     lock_name TEXT PRIMARY KEY,
                     acquired_at TEXT NOT NULL
@@ -266,6 +278,79 @@ class RadarStore:
             ).fetchone()
         return row is not None
 
+    def delivered_candidate_count_since(
+        self, market: str, symbol: str, since: datetime, now: datetime
+    ) -> int:
+        """Count initial radar messages delivered in the current market session."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS candidate_count
+                FROM radar_candidates
+                WHERE market = ? AND symbol = ?
+                    AND telegram_message_id IS NOT NULL
+                    AND created_at >= ? AND created_at <= ?
+                """,
+                (market, symbol, _as_utc_text(since), _as_utc_text(now)),
+            ).fetchone()
+        return int(row["candidate_count"]) if row else 0
+
+    def suppressed_until(
+        self, market: str, symbol: str, now: datetime
+    ) -> Optional[datetime]:
+        """Return an active user mute and remove a stale one when encountered."""
+        now_text = _as_utc_text(now)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT suppressed_until FROM radar_symbol_suppressions
+                WHERE market = ? AND symbol = ?
+                """,
+                (market, symbol),
+            ).fetchone()
+            if row is None:
+                return None
+            until_text = str(row["suppressed_until"])
+            if until_text <= now_text:
+                connection.execute(
+                    """
+                    DELETE FROM radar_symbol_suppressions
+                    WHERE market = ? AND symbol = ?
+                    """,
+                    (market, symbol),
+                )
+                return None
+        return _from_utc_text(until_text)
+
+    def suppress_symbol(
+        self,
+        market: str,
+        symbol: str,
+        *,
+        until: datetime,
+        reason: str,
+        now: datetime,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO radar_symbol_suppressions (
+                    market, symbol, suppressed_until, reason, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(market, symbol) DO UPDATE SET
+                    suppressed_until = excluded.suppressed_until,
+                    reason = excluded.reason,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    market,
+                    symbol,
+                    _as_utc_text(until),
+                    reason[:160],
+                    _as_utc_text(now),
+                ),
+            )
+
     def expiring_candidates(self, now: datetime) -> list[dict[str, Any]]:
         now_text = _as_utc_text(now)
         placeholders = ", ".join("?" for _ in ACTIVE_CANDIDATE_STATUSES)
@@ -367,26 +452,56 @@ class RadarStore:
                 (chat_id, message_id, _as_utc_text(now), candidate_id),
             )
 
-    def last_telegram_update_id(self) -> Optional[int]:
+    def last_telegram_update_id(self, state_key: str = "last_update_id") -> Optional[int]:
         with self._connect() as connection:
             row = connection.execute(
                 """
                 SELECT state_value FROM telegram_update_state
-                WHERE state_key = 'last_update_id'
-                """
+                WHERE state_key = ?
+                """,
+                (state_key,),
             ).fetchone()
+            if row is None and state_key == "market_last_update_id":
+                row = connection.execute(
+                    """
+                    SELECT state_value FROM telegram_update_state
+                    WHERE state_key = 'last_update_id'
+                    """
+                ).fetchone()
         try:
             return int(row["state_value"]) if row else None
         except (TypeError, ValueError):
             return None
 
-    def set_last_telegram_update_id(self, update_id: int, now: datetime) -> None:
+    def set_last_telegram_update_id(
+        self, update_id: int, now: datetime, state_key: str = "last_update_id"
+    ) -> None:
         with self._connect() as connection:
             connection.execute(
                 """
                 INSERT OR REPLACE INTO telegram_update_state (
                     state_key, state_value, updated_at
-                ) VALUES ('last_update_id', ?, ?)
+                ) VALUES (?, ?, ?)
                 """,
-                (str(update_id), _as_utc_text(now)),
+                (state_key, str(update_id), _as_utc_text(now)),
             )
+
+    def prune(self, now: datetime, retention_days: int) -> dict[str, int]:
+        """Remove expired quote and candidate history without losing active state."""
+        cutoff = _as_utc_text(now - timedelta(days=max(1, retention_days)))
+        active_placeholders = ", ".join("?" for _ in ACTIVE_CANDIDATE_STATUSES)
+        with self._connect() as connection:
+            quotes = connection.execute(
+                "DELETE FROM radar_quotes WHERE observed_at < ?", (cutoff,)
+            ).rowcount
+            candidates = connection.execute(
+                f"""
+                DELETE FROM radar_candidates
+                WHERE updated_at < ? AND status NOT IN ({active_placeholders})
+                """,
+                (cutoff, *ACTIVE_CANDIDATE_STATUSES),
+            ).rowcount
+        return {
+            "radar_quotes": max(0, quotes),
+            "radar_candidates": max(0, candidates),
+        }

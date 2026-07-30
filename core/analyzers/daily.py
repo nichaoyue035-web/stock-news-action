@@ -6,6 +6,8 @@ from datetime import datetime
 
 from config import settings
 from core.data_fetcher import get_news
+from core.market_calendar import is_cn_a_share_trading_day
+from utils.notifier import log_info
 
 
 def run_daily(prompts: dict[str, str]) -> None:
@@ -20,12 +22,17 @@ def run_daily(prompts: dict[str, str]) -> None:
         _record_news_summary,
         _send_health_status,
         _send_tg_with_summary,
+        _set_run_reason,
     )
     from core.analyzer import (
         _get_ai_response_with_health,
     )
 
     now = datetime.now(settings.SHA_TZ)
+    if not is_cn_a_share_trading_day(now):
+        log_info(f"A 股休市，跳过每日摘要：{now.strftime('%Y-%m-%d')}")
+        _set_run_reason("market closed", status="success")
+        return
     news = get_news(1440)
     _record_news_summary(news)
     if not news:

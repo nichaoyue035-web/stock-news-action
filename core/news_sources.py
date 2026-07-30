@@ -1,0 +1,24 @@
+"""Compatibility facade for independently testable news-source adapters."""
+
+from __future__ import annotations
+
+from core import news_disclosures, news_eastmoney, news_rss, news_source_common
+
+
+SEC_TICKERS_URL = news_disclosures.SEC_TICKERS_URL
+SEC_SUBMISSIONS_URL = news_disclosures.SEC_SUBMISSIONS_URL
+CSRC_NEWS_URL = news_disclosures.CSRC_NEWS_URL
+SSE_ANNOUNCEMENTS_URL = news_disclosures.SSE_ANNOUNCEMENTS_URL
+GDELT_DOC_API_URL = news_disclosures.GDELT_DOC_API_URL
+CSRC_MATERIAL_TERMS = news_disclosures.CSRC_MATERIAL_TERMS
+SSE_MATERIAL_TERMS = news_disclosures.SSE_MATERIAL_TERMS
+
+_extract_json_payload = news_eastmoney._extract_json_payload
+_parse_datetime = news_source_common._parse_datetime
+_strip_html = news_source_common._strip_html
+_fetch_eastmoney_news = news_eastmoney._fetch_eastmoney_news
+_fetch_external_rss_news = news_rss._fetch_external_rss_news
+_fetch_cn_official_news = news_disclosures._fetch_cn_official_news
+_fetch_sec_edgar_filings = news_disclosures._fetch_sec_edgar_filings
+_fetch_gdelt_discovery_news = news_disclosures._fetch_gdelt_discovery_news
+_fetch_second_batch_news = news_disclosures._fetch_second_batch_news

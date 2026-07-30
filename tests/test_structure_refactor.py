@@ -1,11 +1,13 @@
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
 import main
 from config import settings
-from core.formatter import _infer_news_category
+from core.formatter import _format_market_message, _infer_news_category
 from core.analyzers.monitor import (
     _black_swan_alert_severity,
     _build_news_alert,
@@ -57,10 +59,24 @@ def test_daily_health_uses_monitor_credentials(monkeypatch):
     main._validate_required_env("daily_health")
 
 
+def test_radar_uses_primary_bot_credentials(monkeypatch):
+    monkeypatch.delenv("TG_BOT_TOKEN_MONITOR", raising=False)
+    monkeypatch.delenv("TG_CHAT_ID_MONITOR", raising=False)
+    monkeypatch.setenv("TG_BOT_TOKEN", "primary-token")
+    monkeypatch.setenv("TG_CHAT_ID", "primary-chat")
+
+    main._validate_required_env("radar")
+
+
 def test_daily_health_sends_recent_success_status(monkeypatch, tmp_path):
+    import core.runtime as runtime
     import utils.notifier as notifier
 
-    status_file = tmp_path / "runtime_status.json"
+    status_dir = tmp_path / "runtime_status"
+    monkeypatch.setattr(settings, "RUN_STATUS_DIR", str(status_dir))
+    monkeypatch.setattr(settings, "HEALTH_REQUIRED_MODES", ("monitor",))
+    status_file = Path(runtime.get_run_status_file("monitor"))
+    status_file.parent.mkdir(parents=True)
     status_file.write_text(
         json.dumps(
             {
@@ -78,7 +94,6 @@ def test_daily_health_sends_recent_success_status(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     sent_messages = []
-    monkeypatch.setattr(settings, "RUN_STATUS_FILE", str(status_file))
     monkeypatch.setattr(settings, "TG_BOT_TOKEN_MONITOR", "token")
     monkeypatch.setattr(settings, "TG_CHAT_ID_MONITOR", "chat")
     monkeypatch.setattr(
@@ -90,14 +105,19 @@ def test_daily_health_sends_recent_success_status(monkeypatch, tmp_path):
     main._send_daily_health_reminder()
 
     assert len(sent_messages) == 1
-    assert "🟢 VPS 每日健康提醒：正常" in sent_messages[0][0]
+    assert "🟢 系统正常" in sent_messages[0][0]
     assert sent_messages[0][1] == {"token": "token", "chat_id": "chat"}
 
 
 def test_daily_health_reports_stale_status_as_failure(monkeypatch, tmp_path):
+    import core.runtime as runtime
     import utils.notifier as notifier
 
-    status_file = tmp_path / "runtime_status.json"
+    status_dir = tmp_path / "runtime_status"
+    monkeypatch.setattr(settings, "RUN_STATUS_DIR", str(status_dir))
+    monkeypatch.setattr(settings, "HEALTH_REQUIRED_MODES", ("monitor",))
+    status_file = Path(runtime.get_run_status_file("monitor"))
+    status_file.parent.mkdir(parents=True)
     status_file.write_text(
         json.dumps(
             {
@@ -117,7 +137,6 @@ def test_daily_health_reports_stale_status_as_failure(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     sent_messages = []
-    monkeypatch.setattr(settings, "RUN_STATUS_FILE", str(status_file))
     monkeypatch.setattr(settings, "TG_BOT_TOKEN_MONITOR", "token")
     monkeypatch.setattr(settings, "TG_CHAT_ID_MONITOR", "chat")
     monkeypatch.setattr(
@@ -130,7 +149,7 @@ def test_daily_health_reports_stale_status_as_failure(monkeypatch, tmp_path):
         main._send_daily_health_reminder()
 
     assert len(sent_messages) == 1
-    assert "🔴 VPS 每日健康提醒：需要检查" in sent_messages[0][0]
+    assert "🔴 需要检查" in sent_messages[0][0]
 
 
 def test_runtime_summary_writes_configured_status_file(monkeypatch, tmp_path):
@@ -138,6 +157,7 @@ def test_runtime_summary_writes_configured_status_file(monkeypatch, tmp_path):
 
     status_file = tmp_path / "runtime_status.json"
     monkeypatch.setattr(settings, "RUN_STATUS_FILE", str(status_file))
+    monkeypatch.setattr(settings, "RUN_STATUS_DIR", str(tmp_path / "runtime_status"))
     monkeypatch.setattr(runtime, "CURRENT_RUN_SUMMARY", None)
     runtime._start_run_summary("monitor")
     runtime._set_run_summary(data_fetch_success=True)
@@ -145,6 +165,135 @@ def test_runtime_summary_writes_configured_status_file(monkeypatch, tmp_path):
 
     assert status_file.is_file()
     assert '"mode": "monitor"' in status_file.read_text(encoding="utf-8")
+    assert Path(runtime.get_run_status_file("monitor")).is_file()
+
+
+def test_mode_heartbeat_prevents_a_later_mode_from_hiding_a_failure(monkeypatch, tmp_path):
+    import core.runtime as runtime
+
+    monkeypatch.setattr(settings, "RUN_STATUS_FILE", str(tmp_path / "latest.json"))
+    monkeypatch.setattr(settings, "RUN_STATUS_DIR", str(tmp_path / "runtime_status"))
+    runtime._start_run_summary("daily")
+    runtime._set_run_summary(data_fetch_success=True, status="success")
+    runtime._print_run_summary()
+    runtime._start_run_summary("monitor")
+    runtime._set_run_summary(data_fetch_success=False, status="failed")
+    runtime._print_run_summary()
+
+    daily_status, _, _ = main._read_health_status("daily")
+    monitor_status, _, _ = main._read_health_status("monitor")
+
+    assert daily_status["status"] == "success"
+    assert monitor_status["status"] == "failed"
+
+
+def test_runtime_marks_empty_healthy_news_window_as_success(monkeypatch):
+    import core.runtime as runtime
+    from core.data_fetcher import record_data_source_health, reset_data_source_health
+
+    reset_data_source_health()
+    record_data_source_health("东方财富快讯", "success", "", 0)
+    record_data_source_health("海外 RSS", "success", "", 0)
+    monkeypatch.setattr(runtime, "CURRENT_RUN_SUMMARY", None)
+    runtime._start_run_summary("monitor")
+
+    runtime._record_news_summary([])
+
+    assert runtime._get_run_summary()["data_fetch_success"] is True
+
+
+def test_runtime_returns_nonzero_for_recorded_partial_result(monkeypatch, tmp_path):
+    import core.runtime as runtime
+
+    monkeypatch.setattr(settings, "RUN_STATUS_FILE", str(tmp_path / "latest.json"))
+    monkeypatch.setattr(settings, "RUN_STATUS_DIR", str(tmp_path / "runtime_status"))
+
+    @runtime._with_run_summary("daily")
+    def incomplete_run():
+        runtime._set_run_reason("可选数据源失败", status="partial")
+
+    with pytest.raises(runtime.RunFailedError):
+        incomplete_run()
+
+
+def test_runtime_metrics_aggregate_modes_and_source_failures(monkeypatch, tmp_path):
+    from core.metrics import format_metrics, read_metrics, record_run_metrics
+
+    monkeypatch.setattr(settings, "METRICS_FILE", str(tmp_path / "metrics.json"))
+    record_run_metrics(
+        {
+            "mode": "monitor",
+            "status": "success",
+            "finished_at": "2026-07-30T10:00:00+08:00",
+            "duration_seconds": 1.2,
+            "data_fetch_success": True,
+            "telegram_attempted": False,
+            "telegram_sent": False,
+        },
+        {"海外 RSS": {"status": "success", "count": 2}},
+    )
+    record_run_metrics(
+        {
+            "mode": "monitor",
+            "status": "partial",
+            "finished_at": "2026-07-30T10:05:00+08:00",
+            "duration_seconds": 1.3,
+            "data_fetch_success": False,
+            "telegram_attempted": True,
+            "telegram_sent": False,
+        },
+        {"海外 RSS": {"status": "failed", "count": 0}},
+    )
+
+    metrics = read_metrics()
+    assert metrics["modes"]["monitor"]["runs"] == 2
+    assert metrics["modes"]["monitor"]["partial"] == 1
+    assert metrics["sources"]["海外 RSS"]["failed"] == 1
+    assert "最近异常数据源：" in format_metrics("monitor")
+
+
+def test_failure_alert_uses_the_other_configured_telegram_channel(monkeypatch):
+    import core.failure_notifier as failure_notifier
+
+    sent = []
+    monkeypatch.setattr(settings, "TG_BOT_TOKEN", "primary-token")
+    monkeypatch.setattr(settings, "TG_CHAT_ID", "primary-chat")
+    monkeypatch.setattr(settings, "TG_BOT_TOKEN_MONITOR", "monitor-token")
+    monkeypatch.setattr(settings, "TG_CHAT_ID_MONITOR", "monitor-chat")
+    monkeypatch.setattr(
+        failure_notifier,
+        "send_tg",
+        lambda content, **kwargs: sent.append((content, kwargs)) or True,
+    )
+
+    failure_notifier.send_failure_alert("stock-news@monitor.service")
+
+    assert sent[0][1] == {"token": "primary-token", "chat_id": "primary-chat"}
+    assert "stock-news@monitor.service" in sent[0][0]
+
+
+def test_data_fetcher_retries_transient_get_failure(monkeypatch):
+    import requests
+    import core.data_fetcher as data_fetcher
+
+    class Response:
+        status_code = 200
+
+    attempts = []
+
+    def fake_get(*_args, **_kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise requests.Timeout("temporary")
+        return Response()
+
+    monkeypatch.setattr(settings, "HTTP_GET_MAX_ATTEMPTS", 2)
+    monkeypatch.setattr(settings, "HTTP_GET_RETRY_BASE_SECONDS", 0.01)
+    monkeypatch.setattr(data_fetcher.requests, "get", fake_get)
+    monkeypatch.setattr(data_fetcher.time, "sleep", lambda _seconds: None)
+
+    assert data_fetcher._request_get("https://example.com").status_code == 200
+    assert len(attempts) == 2
 
 
 def test_telegram_long_message_split():
@@ -153,6 +302,27 @@ def test_telegram_long_message_split():
     assert len(chunks) == 3
     assert all(len(chunk) <= 3900 for chunk in chunks)
     assert "".join(chunks) == content
+
+
+def test_market_message_keeps_only_reader_relevant_context():
+    content = _format_market_message(
+        "盘中简报",
+        report_time="2026-07-30 10:30",
+        source="东方财富",
+        category="market",
+        importance="medium",
+        market_scope="A股",
+        related_sectors=["金融"],
+        summary="【重点】流动性消息公布。",
+        impact="【后续验证】核对午后成交。",
+        links="https://example.com/news",
+    )
+
+    assert "分类" not in content
+    assert "重要性" not in content
+    assert "影响范围" not in content
+    assert "重点：流动性消息公布。" in content
+    assert "怎么看\n后续验证：核对午后成交。" in content
 
 
 def test_news_category_infer():
@@ -303,9 +473,9 @@ def test_urgent_news_alert_is_compact_and_keeps_the_market_essence():
     content = _build_news_alert(item, "紧急")
 
     assert "🚨 紧急" in content
-    assert "事件：突发导弹袭击升级" in content
-    assert "市场含义：风险取决于冲突是否扩大并扰乱油运。" in content
-    assert "关注：看油价、运价、黄金与军工" in content
+    assert "突发导弹袭击升级" in content
+    assert "影响：风险取决于冲突是否扩大并扰乱油运。" in content
+    assert "接着看：看油价、运价、黄金与军工" in content
     assert "【确认度】" not in content
     assert "【分类】" not in content
 
@@ -326,8 +496,8 @@ def test_unverified_news_alert_explains_verification_without_sector_call():
     content = _build_news_alert(item, "待核实")
 
     assert "风险线索" in content
-    assert "【后续验证】" in content
-    assert "【A股映射】" not in content
+    assert "接着看：权威来源" in content
+    assert "【" not in content
 
 
 def test_important_monetary_policy_alert_has_specific_market_analysis():
@@ -346,8 +516,8 @@ def test_important_monetary_policy_alert_has_specific_market_analysis():
     content = _build_news_alert(item, "重要")
 
     assert "🔔 重要" in content
-    assert "市场含义：关键在资金与利率预期是否真正改变。" in content
-    assert "关注：看正式工具、期限和规模，以及资金利率、收益率与金融地产反应。" in content
+    assert "影响：关键在资金与利率预期是否真正改变。" in content
+    assert "接着看：看正式工具、期限和规模，以及资金利率、收益率与金融地产反应。" in content
     assert "【重要性】" not in content
 
 
@@ -366,9 +536,9 @@ def test_important_macro_alert_distinguishes_growth_data_from_policy():
 
     content = _build_news_alert(item, "重要")
 
-    assert "关键点：制造业订单改善" in content
-    assert "市场含义：关键是数据相对预期的变化，而不是单看绝对数。" in content
-    assert "关注：看预期差、订单库存及资源、汽车与顺周期方向是否确认。" in content
+    assert "重点：制造业订单改善" in content
+    assert "影响：关键是数据相对预期的变化，而不是单看绝对数。" in content
+    assert "接着看：看预期差、订单库存及资源、汽车与顺周期方向是否确认。" in content
 
 
 def test_important_company_alert_does_not_overstate_sector_signal():
@@ -386,9 +556,9 @@ def test_important_company_alert_does_not_overstate_sector_signal():
 
     content = _build_news_alert(item, "重要")
 
-    assert "关键点：等待进一步公告" in content
-    assert "市场含义：先看事项规模、审批条件和财务影响，不直接外推为行业趋势。" in content
-    assert "关注：看正式公告及新能源、同业是否出现独立确认。" in content
+    assert "重点：等待进一步公告" in content
+    assert "影响：先看事项规模、审批条件和财务影响，不直接外推为行业趋势。" in content
+    assert "接着看：看正式公告及新能源、同业是否出现独立确认。" in content
 
 
 def test_funds_sends_result_to_primary_bot(monkeypatch):
@@ -429,10 +599,10 @@ def test_funds_sends_result_to_primary_bot(monkeypatch):
 
     assert len(sent_messages) == 1
     assert "主力资金雷达" in sent_messages[0][0]
-    assert "【资金温度】" in sent_messages[0][0]
+    assert "资金温度：" in sent_messages[0][0]
     assert "流入且上涨（同向确认）" in sent_messages[0][0]
-    assert "【新闻催化】" in sent_messages[0][0]
-    assert "【可能影响】【资金结论】" in sent_messages[0][0]
+    assert "相关新闻：" in sent_messages[0][0]
+    assert "怎么看\n资金结论：" in sent_messages[0][0]
     assert sent_messages[0][1] == {}
 
 
@@ -497,9 +667,9 @@ def test_periodic_separates_news_facts_from_structured_impact(monkeypatch):
     periodic.run_periodic({})
 
     assert len(sent_messages) == 1
-    assert "【盘中事实】" in sent_messages[0][0]
+    assert "重点新闻：" in sent_messages[0][0]
     assert "[10:30｜eastmoney] 央行发布最新流动性操作" in sent_messages[0][0]
-    assert "【可能影响】【盘中主线】" in sent_messages[0][0]
+    assert "怎么看\n盘中主线：" in sent_messages[0][0]
 
 
 def test_us_premarket_filters_a_share_only_news_and_sends_us_brief(monkeypatch):
@@ -553,8 +723,8 @@ def test_us_premarket_filters_a_share_only_news_and_sends_us_brief(monkeypatch):
 
     assert len(sent_messages) == 1
     assert "美股盘前简报" in sent_messages[0][0]
-    assert "【盘前事实】" in sent_messages[0][0]
-    assert "【影响范围】美股 / 全球联动" in sent_messages[0][0]
+    assert "重点新闻：" in sent_messages[0][0]
+    assert "涉及：半导体" in sent_messages[0][0]
     assert "SEC 披露｜NVDA｜8-K" in prompts[0]
     assert "A股公司发布日常公告" not in prompts[0]
 
@@ -634,9 +804,9 @@ def test_after_market_separates_news_facts_from_structured_impact(monkeypatch):
     after_market.run_after_market({})
 
     assert len(sent_messages) == 1
-    assert "【收盘事实】" in sent_messages[0][0]
+    assert "重点新闻：" in sent_messages[0][0]
     assert "[15:00｜eastmoney] 半导体行业发布供需数据" in sent_messages[0][0]
-    assert "【可能影响】【收盘结论】" in sent_messages[0][0]
+    assert "怎么看\n收盘结论：" in sent_messages[0][0]
 
 
 def test_monitor_defers_important_market_news_to_three_hour_summary():
@@ -1149,7 +1319,7 @@ def test_monitor_store_returns_only_recent_previous_quote(tmp_path):
             price=10.0,
             pct=0.0,
             observed_at=now,
-            max_gap_minutes=3,
+            max_gap_minutes=6,
         )
         is None
     )
@@ -1158,8 +1328,8 @@ def test_monitor_store_returns_only_recent_previous_quote(tmp_path):
         name="测试股",
         price=10.2,
         pct=2.0,
-        observed_at=now + timedelta(minutes=1),
-        max_gap_minutes=3,
+        observed_at=now + timedelta(minutes=5),
+        max_gap_minutes=6,
     )
     assert previous is not None
     assert previous["price"] == 10.0
@@ -1169,8 +1339,8 @@ def test_monitor_store_returns_only_recent_previous_quote(tmp_path):
             name="测试股",
             price=10.3,
             pct=3.0,
-            observed_at=now + timedelta(minutes=10),
-            max_gap_minutes=3,
+            observed_at=now + timedelta(minutes=12),
+            max_gap_minutes=6,
         )
         is None
     )
@@ -1185,6 +1355,120 @@ def test_monitor_store_prevents_overlapping_cycles(tmp_path):
     assert not store.acquire_lock("monitor", now + timedelta(minutes=1))
     store.release_lock("monitor")
     assert store.acquire_lock("monitor", now + timedelta(minutes=1))
+
+
+def test_maintenance_prunes_expired_state_and_creates_sqlite_backup(
+    monkeypatch, tmp_path
+):
+    from core.maintenance import run_maintenance
+    from core.radar_store import RadarStore
+
+    database = tmp_path / "monitor.db"
+    backup_dir = tmp_path / "backups"
+    now = datetime.now(settings.SHA_TZ)
+    old = now - timedelta(days=2)
+    monkeypatch.setattr(settings, "MONITOR_DB_FILE", str(database))
+    monkeypatch.setattr(settings, "STATE_BACKUP_DIR", str(backup_dir))
+    monkeypatch.setattr(settings, "DB_RETENTION_DAYS", 1)
+    monkeypatch.setattr(settings, "DB_BACKUP_RETENTION_DAYS", 7)
+    monkeypatch.setattr(settings, "RUN_STATUS_FILE", str(tmp_path / "latest.json"))
+    monkeypatch.setattr(settings, "RUN_STATUS_DIR", str(tmp_path / "runtime_status"))
+    monkeypatch.setattr(settings, "METRICS_FILE", str(tmp_path / "metrics.json"))
+    monkeypatch.setattr(settings, "OFFSITE_BACKUP_ENABLED", False)
+
+    monitor_store = MonitorStore(str(database))
+    radar_store = RadarStore(str(database))
+    monitor_store.initialize()
+    radar_store.initialize()
+    monitor_store.record_news_event(
+        {
+            "title": "过期新闻",
+            "digest": "测试",
+            "source": "test",
+            "link": "https://example.com/old",
+            "datetime": old,
+        },
+        old,
+    )
+    monitor_store.record_quote(
+        code="000001",
+        name="测试股",
+        price=10.0,
+        pct=0.0,
+        observed_at=old,
+        max_gap_minutes=6,
+    )
+    radar_store.record_quote(
+        market="CN",
+        symbol="000001",
+        name="测试股",
+        price=10.0,
+        pct=0.0,
+        volume=None,
+        observed_at=old,
+    )
+
+    run_maintenance()
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM news_events").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM market_quotes").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM radar_quotes").fetchone()[0] == 0
+    assert list(backup_dir.glob("monitor-*.sqlite3"))
+    assert list(backup_dir.glob("stock-news-state-*.zip"))
+
+
+def test_enabled_offsite_backup_fails_when_rclone_upload_fails(monkeypatch, tmp_path):
+    import core.maintenance as maintenance
+
+    archive = tmp_path / "stock-news-state-test.zip"
+    archive.write_bytes(b"backup")
+    monkeypatch.setattr(settings, "OFFSITE_BACKUP_ENABLED", True)
+    monkeypatch.setattr(
+        settings, "OFFSITE_BACKUP_RCLONE_TARGET", "remote:stock-news-action"
+    )
+    monkeypatch.setattr(maintenance.shutil, "which", lambda _name: "/usr/bin/rclone")
+    monkeypatch.setattr(
+        maintenance.subprocess,
+        "run",
+        lambda *_args, **_kwargs: type("Result", (), {"returncode": 3})(),
+    )
+
+    with pytest.raises(maintenance.OffsiteBackupError, match="rclone exit 3"):
+        maintenance._upload_offsite_backup(archive)
+
+
+def test_enabled_offsite_backup_uses_timestamped_recovery_archive(monkeypatch, tmp_path):
+    import core.maintenance as maintenance
+
+    archive = tmp_path / "stock-news-state-test.zip"
+    archive.write_bytes(b"backup")
+    monkeypatch.setattr(settings, "OFFSITE_BACKUP_ENABLED", True)
+    monkeypatch.setattr(
+        settings, "OFFSITE_BACKUP_RCLONE_TARGET", "remote:stock-news-action"
+    )
+    monkeypatch.setattr(maintenance.shutil, "which", lambda _name: "/usr/bin/rclone")
+    commands = []
+    monkeypatch.setattr(
+        maintenance.subprocess,
+        "run",
+        lambda args, **_kwargs: commands.append(args)
+        or type("Result", (), {"returncode": 0})(),
+    )
+
+    destination = maintenance._upload_offsite_backup(archive)
+
+    assert destination == "remote:stock-news-action/stock-news-state-test.zip"
+    assert commands == [
+        [
+            "rclone",
+            "copyto",
+            str(archive),
+            destination,
+            "--retries",
+            "2",
+        ]
+    ]
 
 
 def test_monitor_defers_important_news_without_minute_level_delivery(monkeypatch, tmp_path):
@@ -1451,8 +1735,9 @@ def test_append_history_reports_write_failure(monkeypatch, tmp_path):
     from config import settings
     from core.history import _append_history
 
-    blocked_dir = tmp_path / "missing" / "history.csv"
-    monkeypatch.setattr(settings, "HISTORY_FILE", str(blocked_dir))
+    blocked_parent = tmp_path / "blocked"
+    blocked_parent.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setattr(settings, "HISTORY_FILE", str(blocked_parent / "history.csv"))
 
     assert (
         _append_history({"name": "测试", "code": "000001", "reason": "测试"}, "1.23")
@@ -1543,3 +1828,35 @@ def test_semantic_dedup_skips_ai_for_dissimilar_titles(monkeypatch):
     ]
 
     assert data_fetcher._deduplicate_semantic_news(items) == items
+
+
+def test_news_source_failures_do_not_mislabel_eastmoney(monkeypatch):
+    import core.data_fetcher as data_fetcher
+
+    class FakeResponse:
+        text = '{"LivesList": []}'
+
+    data_fetcher.reset_data_source_health()
+    monkeypatch.setattr(data_fetcher.requests, "get", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(
+        data_fetcher,
+        "_fetch_external_rss_news",
+        lambda *_: (_ for _ in ()).throw(RuntimeError("rss unavailable")),
+    )
+    monkeypatch.setattr(data_fetcher, "_fetch_second_batch_news", lambda *_: [])
+
+    assert data_fetcher.get_news(20, semantic_dedup=False, translate_external=False) == []
+    health = data_fetcher.get_data_source_health()
+    assert health["东方财富快讯"]["status"] == "success"
+    assert health["海外 RSS"]["status"] == "failed"
+
+
+def test_market_holiday_configuration_skips_scheduled_market_work(monkeypatch):
+    from core.market_calendar import is_cn_a_share_trading_day, is_us_equity_trading_day
+
+    moment = datetime(2026, 7, 28, 10, tzinfo=settings.US_EASTERN_TZ)
+    monkeypatch.setattr(settings, "CN_MARKET_HOLIDAYS", frozenset({"2026-07-28"}))
+    monkeypatch.setattr(settings, "US_MARKET_HOLIDAYS", frozenset({"2026-07-28"}))
+
+    assert not is_cn_a_share_trading_day(moment)
+    assert not is_us_equity_trading_day(moment)

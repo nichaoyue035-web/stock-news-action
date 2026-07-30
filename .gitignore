@@ -7,3 +7,5 @@ monitor.db
 monitor.db-shm
 monitor.db-wal
 runtime_status.json
+runtime_metrics.json
+runtime_metrics.json.lock

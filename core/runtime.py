@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime
 from functools import wraps
 from typing import Any, Callable
@@ -13,10 +14,21 @@ from utils.notifier import log_info, send_tg
 CURRENT_RUN_SUMMARY: dict[str, Any] | None = None
 
 
+class RunFailedError(RuntimeError):
+    """Raised after a run records a failed or partial production result."""
+
+
+def get_run_status_file(mode: str) -> str:
+    """Return the independent, filesystem-safe heartbeat path for one mode."""
+    safe_mode = re.sub(r"[^a-z0-9_-]+", "_", str(mode or "unknown").lower())
+    return os.path.join(settings.RUN_STATUS_DIR, f"{safe_mode or 'unknown'}.json")
+
+
 def _start_run_summary(mode: str) -> None:
     global CURRENT_RUN_SUMMARY
     CURRENT_RUN_SUMMARY = {
         "mode": mode,
+        "started_at": datetime.now(settings.SHA_TZ).isoformat(),
         "data_fetch_success": None,
         "news_count": None,
         "rss_count": None,
@@ -62,13 +74,16 @@ def _record_news_summary(news: list[dict[str, Any]]) -> None:
         "news_count": len(news),
         "rss_count": rss_count,
     }
-    if summary is None or summary.get("data_fetch_success") is None:
-        updates["data_fetch_success"] = bool(news)
-    if news and any(
+    source_failed = any(
         state.get("status") in {"failed", "partial"}
         for name, state in health.items()
         if name != "DeepSeek"
-    ):
+    )
+    if summary is None or summary.get("data_fetch_success") is None:
+        # An empty lookback window is normal for monitor/global modes.  Only a
+        # source failure means data fetching itself failed.
+        updates["data_fetch_success"] = not source_failed
+    if source_failed:
         updates["status"] = "partial"
     _set_run_summary(**updates)
 
@@ -97,7 +112,15 @@ def _print_run_summary() -> None:
         return
 
     summary["status"] = _derive_run_status(summary)
-    summary["finished_at"] = datetime.now(settings.SHA_TZ).isoformat()
+    finished_at = datetime.now(settings.SHA_TZ)
+    summary["finished_at"] = finished_at.isoformat()
+    try:
+        started_at = datetime.fromisoformat(str(summary.get("started_at") or ""))
+        summary["duration_seconds"] = max(
+            0, round((finished_at - started_at).total_seconds(), 3)
+        )
+    except ValueError:
+        summary["duration_seconds"] = None
     print("[RUN SUMMARY]")
     for key in (
         "mode",
@@ -108,6 +131,7 @@ def _print_run_summary() -> None:
         "telegram_attempted",
         "telegram_sent",
         "status",
+        "duration_seconds",
         "reason",
     ):
         value = summary.get(key)
@@ -119,21 +143,26 @@ def _print_run_summary() -> None:
             value = str(value).lower()
         print(f"{key}={value}")
     _persist_run_summary(summary)
+    from core.metrics import record_run_metrics
+
+    record_run_metrics(summary, get_data_source_health())
 
 
 def _persist_run_summary(summary: dict[str, Any]) -> None:
-    """Atomically persist a secret-free heartbeat for VPS health checks."""
-    status_file = settings.RUN_STATUS_FILE
-    temp_file = f"{status_file}.tmp"
-    try:
-        status_dir = os.path.dirname(status_file)
-        if status_dir:
-            os.makedirs(status_dir, exist_ok=True)
-        with open(temp_file, "w", encoding="utf-8") as file:
-            json.dump(summary, file, ensure_ascii=False, indent=2)
-        os.replace(temp_file, status_file)
-    except OSError as exc:
-        log_info(f"运行状态保存失败: {exc.__class__.__name__}")
+    """Atomically persist legacy and per-mode, secret-free heartbeats."""
+    mode_status_file = get_run_status_file(str(summary.get("mode") or "unknown"))
+    status_files = tuple(dict.fromkeys((settings.RUN_STATUS_FILE, mode_status_file)))
+    for status_file in status_files:
+        temp_file = f"{status_file}.{os.getpid()}.tmp"
+        try:
+            status_dir = os.path.dirname(status_file)
+            if status_dir:
+                os.makedirs(status_dir, exist_ok=True)
+            with open(temp_file, "w", encoding="utf-8") as file:
+                json.dump(summary, file, ensure_ascii=False, indent=2)
+            os.replace(temp_file, status_file)
+        except OSError as exc:
+            log_info(f"运行状态保存失败: {exc.__class__.__name__}")
 
 
 def _with_run_summary(mode_value: str | Callable[..., str]):
@@ -143,12 +172,18 @@ def _with_run_summary(mode_value: str | Callable[..., str]):
             mode = mode_value(*args, **kwargs) if callable(mode_value) else mode_value
             _start_run_summary(str(mode))
             try:
-                return func(*args, **kwargs)
-            except Exception:
+                result = func(*args, **kwargs)
+            except BaseException:
                 _set_run_summary(status="failed")
                 raise
             finally:
                 _print_run_summary()
+
+            summary = _get_run_summary() or {}
+            if summary.get("status") != "success":
+                reason = str(summary.get("reason") or "任务未完整完成")
+                raise RunFailedError(f"❌ {mode} 任务失败或部分完成: {reason}")
+            return result
 
         return wrapper
 
@@ -200,10 +235,9 @@ def _format_health_status_message(reason: str, formatter) -> str:
     if "DeepSeek" not in health:
         health["DeepSeek"] = {"status": "skipped", "detail": "未调用", "count": None}
 
-    lines = ["数据源状态："]
+    lines = ["⚠️ 本次任务未完成", str(reason).strip()]
+    lines.append("数据源：")
     lines.extend(formatter(name, state) for name, state in health.items())
-    if reason:
-        lines.append(f"- 结果：{reason}")
     return "\n".join(lines)
 
 

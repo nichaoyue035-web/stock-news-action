@@ -20,6 +20,7 @@ def test_yfinance_development_probe_normalizes_and_screens_quotes(monkeypatch):
     monkeypatch.setattr(settings, "US_RADAR_MIN_PRICE", 1.0)
     monkeypatch.setattr(settings, "US_RADAR_MAX_PRICE", 5.0)
     monkeypatch.setattr(settings, "US_RADAR_MIN_DAY_CHANGE_PCT", 10.0)
+    monkeypatch.setattr(settings, "US_RADAR_MAX_DAY_CHANGE_PCT", 30.0)
     monkeypatch.setattr(settings, "US_RADAR_MIN_DOLLAR_VOLUME", 1_000_000.0)
 
     quotes = fetch_yfinance_dev_quotes(
@@ -66,6 +67,7 @@ def test_yfinance_broad_market_probe_filters_a_capped_screener_response(monkeypa
     monkeypatch.setattr(settings, "US_RADAR_MIN_PRICE", 1.0)
     monkeypatch.setattr(settings, "US_RADAR_MAX_PRICE", 5.0)
     monkeypatch.setattr(settings, "US_RADAR_MIN_DAY_CHANGE_PCT", 10.0)
+    monkeypatch.setattr(settings, "US_RADAR_MAX_DAY_CHANGE_PCT", 30.0)
     monkeypatch.setattr(settings, "US_RADAR_MIN_DOLLAR_VOLUME", 1_000_000.0)
 
     class Query:
@@ -81,7 +83,7 @@ def test_yfinance_broad_market_probe_filters_a_capped_screener_response(monkeypa
             assert kwargs == {
                 "size": YFINANCE_BROAD_SCAN_RESULT_CAP,
                 "sortField": "percentchange",
-                "sortAsc": False,
+                "sortAsc": True,
             }
             return {
                 "total": 300,

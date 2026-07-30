@@ -15,6 +15,7 @@ from core.data_fetcher import (
     get_us_stock_snapshots,
 )
 from core.interaction_auth import is_authorized_interaction
+from core.market_calendar import is_cn_a_share_trading_day, is_us_equity_trading_day
 from core.radar_store import RadarStore
 from core.runtime import (
     _record_fetch_success,
@@ -63,7 +64,7 @@ def _normalise_a_share_codes(raw_codes: list[str]) -> list[str]:
 
 
 def _is_a_share_trading_session(now: datetime) -> bool:
-    if now.weekday() >= 5:
+    if not is_cn_a_share_trading_day(now):
         return False
     current_time = now.astimezone(settings.SHA_TZ).time().replace(tzinfo=None)
     return time(9, 30) <= current_time <= time(11, 30) or time(13, 0) <= current_time <= time(15, 0)
@@ -72,7 +73,7 @@ def _is_a_share_trading_session(now: datetime) -> bool:
 def _is_us_trading_session(now: datetime) -> bool:
     """Cover US pre-market, regular session and after-hours in Eastern Time."""
     local = now.astimezone(settings.US_EASTERN_TZ)
-    if local.weekday() >= 5:
+    if not is_us_equity_trading_day(local):
         return False
     current_time = local.time().replace(tzinfo=None)
     return time(4, 0) <= current_time <= time(20, 0)
@@ -92,6 +93,12 @@ def _market_close_minutes(market: str, now: datetime) -> int:
     if close_at <= local_now:
         return 1
     return max(1, int((close_at - local_now).total_seconds() // 60))
+
+
+def _market_session_start(market: str, now: datetime) -> datetime:
+    timezone = settings.SHA_TZ if market == "CN" else settings.US_EASTERN_TZ
+    local_now = now.astimezone(timezone)
+    return local_now.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def _signal_text(attributes: dict[str, Any]) -> str:
@@ -118,8 +125,12 @@ def _candidate_buttons(candidate_id: str) -> dict[str, Any]:
             ],
             [
                 {
-                    "text": "停止追踪",
+                    "text": "停止本次追踪",
                     "callback_data": f"{RADAR_CALLBACK_PREFIX}:{candidate_id}:stop",
+                },
+                {
+                    "text": f"{settings.RADAR_SYMBOL_MUTE_DAYS} 天不再推送",
+                    "callback_data": f"{RADAR_CALLBACK_PREFIX}:{candidate_id}:mute",
                 }
             ],
         ]
@@ -145,29 +156,19 @@ def _format_candidate_message(candidate: dict[str, Any]) -> str:
         else ""
     )
     lines = [
-        f"🟡 实时标的雷达｜{_market_label(candidate['market'])}｜自动追踪中",
-        f"标的：{candidate['symbol']} {candidate['name']}",
-        f"触发价：{price:.2f}｜当日涨跌：{pct_text}",
-        "",
-        "【触发事实】",
-        evidence,
-        f"成交额：{volume_text}",
-        "",
-        "【当前操作状态】",
-        "暂不按初始异动处理；系统将自动核对成交持续性与价格是否失效。",
-        "",
-        "【催化核对】",
-        catalyst,
-        *(["", "【数据限制】", data_limit] if data_limit else []),
-        "",
-        "【确认条件】",
-        "短时价格未明显回落，且下一轮成交/行情数据仍可核对。",
-        "",
-        "【失效／回避条件】",
-        f"触发价回落 {settings.RADAR_INVALIDATION_PCT:.1f}% 以上、行情数据失真或出现风险信息时停止追踪。",
-        "",
-        f"说明：{_signal_text(attributes)} 仅作信息观察，不构成买卖建议。",
+        f"🟡 自动追踪｜{_market_label(candidate['market'])}",
+        f"{candidate['symbol']} {candidate['name']} · {price:.2f} · 当日 {pct_text}",
+        f"触发：{evidence}；成交额 {volume_text}",
+        f"催化：{catalyst}",
+        f"接下来：{_signal_text(attributes)}",
+        (
+            f"停止条件：较触发价回落 {settings.RADAR_INVALIDATION_PCT:.1f}% "
+            "以上、行情异常或出现风险信息。"
+        ),
     ]
+    if data_limit:
+        lines.append(f"数据限制：{data_limit}")
+    lines.append("仅作观察，不是交易指令。")
     return "\n".join(lines)
 
 
@@ -182,26 +183,22 @@ def _format_update_message(candidate: dict[str, Any], state: str) -> str:
         last_text = f"{last:.2f}"
         change_text = f"{(last / initial_price - 1) * 100:+.2f}%"
     title = {
-        "confirmed": "🟢 实时标的雷达｜条件暂未失效",
-        "invalidated": "🔴 实时标的雷达｜信号已失效",
-        "expired": "⚪️ 实时标的雷达｜自动追踪结束",
+        "confirmed": "🟢 追踪继续",
+        "invalidated": "🔴 追踪停止",
+        "expired": "⚪️ 追踪结束",
     }[state]
     status_text = {
-        "confirmed": "初始追踪窗口内未出现设定的回落失效条件，继续观察但不把它视为买卖指令。",
-        "invalidated": "价格已触及预设失效条件，停止按这次初始异动继续关注。",
-        "expired": "本轮自动追踪已到期；如仍需要，点击原消息按钮可在到期前延长追踪。",
+        "confirmed": "初始窗口内未触及停止条件，继续由系统核对。",
+        "invalidated": "已触及预设停止条件，不再按这次异动追踪。",
+        "expired": "本轮自动追踪到期。",
     }[state]
     return "\n".join(
         (
             title,
-            f"标的：{candidate['symbol']} {candidate['name']}｜{_market_label(candidate['market'])}",
-            f"触发价：{initial_price:.2f}｜最新价：{last_text}｜相对触发：{change_text}",
-            "",
-            "【操作状态】",
+            f"{candidate['symbol']} {candidate['name']}｜{_market_label(candidate['market'])}",
+            f"触发 {initial_price:.2f} · 最新 {last_text} · 相对触发 {change_text}",
             status_text,
-            "",
-            "【风险提示】",
-            "行情可能延迟、跳空或快速反转；请自行核对最新报价与原始公告。",
+            "行情可能延迟或快速反转，请核对最新报价和原始公告。",
         )
     )
 
@@ -211,15 +208,15 @@ def _send_candidate(candidate: dict[str, Any], store: RadarStore, now: datetime)
     message_id = send_tg_interactive(
         _format_candidate_message(candidate),
         reply_markup=_candidate_buttons(str(candidate["candidate_id"])),
-        token=settings.INTERACTION_BOT_TOKEN,
-        chat_id=settings.INTERACTION_CHAT_ID,
+        token=settings.RADAR_INTERACTION_BOT_TOKEN,
+        chat_id=settings.RADAR_INTERACTION_CHAT_ID,
     )
     if message_id is None:
         _set_run_summary(telegram_sent=False, status="failed")
         return False
     store.set_telegram_delivery(
         str(candidate["candidate_id"]),
-        str(settings.INTERACTION_CHAT_ID),
+        str(settings.RADAR_INTERACTION_CHAT_ID),
         message_id,
         now,
     )
@@ -239,6 +236,22 @@ def _create_candidate(
     attributes: dict[str, Any],
     now: datetime,
 ) -> bool:
+    muted_until = store.suppressed_until(market, symbol, now)
+    if muted_until is not None:
+        log_info(
+            f"雷达跳过已静默标的: {market}:{symbol}，静默至 {muted_until.isoformat()}"
+        )
+        return False
+    session_start = _market_session_start(market, now)
+    delivered_count = store.delivered_candidate_count_since(
+        market, symbol, session_start, now
+    )
+    if delivered_count >= settings.RADAR_MAX_CANDIDATES_PER_SYMBOL_PER_SESSION:
+        log_info(
+            f"雷达跳过当日已推送标的: {market}:{symbol}，"
+            f"已推送 {delivered_count} 次"
+        )
+        return False
     candidate, created = store.create_candidate(
         market=market,
         symbol=symbol,
@@ -330,8 +343,7 @@ def _scan_a_share_hot_pool(store: RadarStore, now: datetime) -> tuple[int, int]:
             _set_run_reason("A 股热门池抓取失败", status="partial")
         return 0, 0
 
-    sampled = 0
-    candidates = 0
+    eligible_stocks: list[tuple[dict[str, Any], float, float]] = []
     for item in hot_stocks:
         price = _safe_float(item.get("price"))
         pct = _safe_float(item.get("pct"))
@@ -341,10 +353,16 @@ def _scan_a_share_hot_pool(store: RadarStore, now: datetime) -> tuple[int, int]:
             settings.RADAR_A_SHARE_HOT_POOL_MIN_PRICE
             <= price
             <= settings.RADAR_A_SHARE_HOT_POOL_MAX_PRICE
-            and pct >= settings.RADAR_A_SHARE_HOT_POOL_MIN_DAY_CHANGE_PCT
+            and settings.RADAR_A_SHARE_HOT_POOL_MIN_DAY_CHANGE_PCT
+            <= pct
+            <= settings.RADAR_A_SHARE_HOT_POOL_MAX_DAY_CHANGE_PCT
         ):
             continue
-        sampled += 1
+        eligible_stocks.append((item, price, pct))
+
+    sampled = len(eligible_stocks)
+    candidates = 0
+    for item, price, pct in sorted(eligible_stocks, key=lambda entry: entry[2]):
         if candidates >= settings.RADAR_A_SHARE_HOT_POOL_MAX_NEW_CANDIDATES:
             continue
         raw_code = str(item.get("code") or "").strip()
@@ -362,7 +380,7 @@ def _scan_a_share_hot_pool(store: RadarStore, now: datetime) -> tuple[int, int]:
             pct=pct,
             volume=None,
             attributes={
-                "signal": "低价高换手上涨",
+                "signal": "低价股早期走强",
                 "evidence": (
                     f"成交额热门池中的低价股；股价 {price:.2f} 元，"
                     f"当日 {pct:+.2f}%。"
@@ -412,7 +430,7 @@ def _scan_yahoo_experimental_candidates(
             pct=float(quote["pct"]),
             volume=float(quote.get("volume") or 0),
             attributes={
-                "signal": "低价股放量上涨（实验性筛选）",
+                "signal": "低价股早期走强（实验性筛选）",
                 "dollar_volume": float(quote["dollar_volume"]),
                 "evidence": (
                     f"Yahoo 候选池：股价 ${float(quote['price']):.2f}；"
@@ -439,9 +457,12 @@ def _scan_us_candidates(store: RadarStore, now: datetime) -> tuple[int, int]:
         for quote in snapshots
         if settings.US_RADAR_MIN_PRICE <= float(quote["price"]) <= settings.US_RADAR_MAX_PRICE
         and float(quote["pct"]) >= settings.US_RADAR_MIN_DAY_CHANGE_PCT
+        and float(quote["pct"]) <= settings.US_RADAR_MAX_DAY_CHANGE_PCT
         and float(quote["dollar_volume"]) >= settings.US_RADAR_MIN_DOLLAR_VOLUME
     ]
-    eligible.sort(key=lambda quote: (float(quote["pct"]), float(quote["dollar_volume"])), reverse=True)
+    eligible.sort(
+        key=lambda quote: (float(quote["pct"]), -float(quote["dollar_volume"]))
+    )
 
     candidates = 0
     for quote in eligible:
@@ -465,7 +486,7 @@ def _scan_us_candidates(store: RadarStore, now: datetime) -> tuple[int, int]:
             pct=float(quote["pct"]),
             volume=float(quote.get("volume") or 0),
             attributes={
-                "signal": "低价股放量上涨",
+                "signal": "低价股早期走强",
                 "dollar_volume": float(quote["dollar_volume"]),
                 "evidence": (
                     f"股价 ${float(quote['price']):.2f}；当日 {float(quote['pct']):+.2f}%；"
@@ -558,8 +579,8 @@ def _process_active_candidates(store: RadarStore, now: datetime) -> tuple[int, i
             ):
                 _send_tg_with_summary(
                     _format_update_message(candidate, "invalidated"),
-                    token=settings.INTERACTION_BOT_TOKEN,
-                    chat_id=settings.INTERACTION_CHAT_ID,
+                    token=settings.RADAR_INTERACTION_BOT_TOKEN,
+                    chat_id=settings.RADAR_INTERACTION_CHAT_ID,
                 )
                 invalidated += 1
             continue
@@ -573,8 +594,8 @@ def _process_active_candidates(store: RadarStore, now: datetime) -> tuple[int, i
             store.mark_confirmed(str(candidate["candidate_id"]), now)
             _send_tg_with_summary(
                 _format_update_message(candidate, "confirmed"),
-                token=settings.INTERACTION_BOT_TOKEN,
-                chat_id=settings.INTERACTION_CHAT_ID,
+                token=settings.RADAR_INTERACTION_BOT_TOKEN,
+                chat_id=settings.RADAR_INTERACTION_CHAT_ID,
             )
             confirmed += 1
     return processed, confirmed, invalidated
@@ -586,15 +607,17 @@ def _close_expired_candidates(store: RadarStore, now: datetime) -> int:
         if store.close_candidate(str(candidate["candidate_id"]), "追踪到期", now):
             _send_tg_with_summary(
                 _format_update_message(candidate, "expired"),
-                token=settings.INTERACTION_BOT_TOKEN,
-                chat_id=settings.INTERACTION_CHAT_ID,
+                token=settings.RADAR_INTERACTION_BOT_TOKEN,
+                chat_id=settings.RADAR_INTERACTION_CHAT_ID,
             )
             closed += 1
     return closed
 
 
 def _is_authorized_callback(callback: dict[str, Any]) -> bool:
-    return is_authorized_interaction(callback)
+    return is_authorized_interaction(
+        callback, private_chat_id=settings.RADAR_INTERACTION_CHAT_ID
+    )
 
 
 def handle_radar_callback(callback: dict[str, Any], now: Optional[datetime] = None) -> str:
@@ -620,6 +643,17 @@ def handle_radar_callback(callback: dict[str, Any], now: Optional[datetime] = No
         if store.close_candidate(candidate_id, "用户停止追踪", now):
             return f"已停止追踪 {candidate['symbol']}。"
         return "该候选已结束，无需重复停止。"
+    if action == "mute":
+        mute_days = settings.RADAR_SYMBOL_MUTE_DAYS
+        store.suppress_symbol(
+            str(candidate["market"]),
+            str(candidate["symbol"]),
+            until=now + timedelta(days=mute_days),
+            reason="用户不感兴趣",
+            now=now,
+        )
+        store.close_candidate(candidate_id, "用户不感兴趣", now)
+        return f"已停止追踪 {candidate['symbol']}，未来 {mute_days} 天不再推送。"
     if action == "close":
         minutes = _market_close_minutes(str(candidate["market"]), now)
         extended = store.extend_candidate(candidate_id, minutes, now)

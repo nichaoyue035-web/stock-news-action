@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -24,6 +25,18 @@ def _soften_trading_language(text: Any) -> str:
     for raw, replacement in replacements.items():
         softened = softened.replace(raw, replacement)
     return softened
+
+
+def _clean_message_text(text: Any) -> str:
+    """Keep generated content readable even when an older prompt uses report labels."""
+    clean = _soften_trading_language(text).strip()
+    clean = re.sub(r"(?m)^【([^】]+)】\s*", r"\1：", clean)
+    clean = re.sub(r"\n{3,}", "\n\n", clean)
+    return clean
+
+
+def _is_display_value(value: Any) -> bool:
+    return str(value or "").strip() not in {"", "未知", "其他", "见上方摘要"}
 
 
 def _format_news_time(item: dict[str, Any]) -> str:
@@ -159,22 +172,46 @@ def _infer_market_importance(item: dict[str, Any]) -> str:
 
 
 def _title_icon(title: str) -> str:
-    for keyword, icon in (("美股", "🇺🇸"), ("资金", "💰"), ("国际", "🌍"), ("宏观", "🌍"), ("每日复盘", "🌇"), ("盘中茶歇", "🍵"), ("市场信息", "📰"), ("市场观察", "🔎"), ("观察标的", "👀"), ("复盘辅助", "🧾")):
+    for keyword, icon in (("美股", "🇺🇸"), ("资金", "💰"), ("国际", "🌍"), ("宏观", "🌍"), ("三小时", "🧭"), ("市场总结", "🧭"), ("每日复盘", "🌇"), ("盘前", "☀️"), ("盘中茶歇", "🍵"), ("自选股", "📈"), ("实时监控", "⚠️"), ("市场信息", "📰"), ("市场观察", "🔎"), ("观察标的", "👀"), ("复盘辅助", "🧾")):
         if keyword in title:
             return icon
     return "📌"
 
 
 def _format_market_message(title: str, *, report_time: str, source: str, category: str, importance: str, summary: str, impact: str = "见上方摘要", links: str = "未知", market_scope: str = "其他", related_sectors: Any = None, include_title: bool = True) -> str:
-    title_prefix = f"{_title_icon(title)} {title}\n\n" if include_title else ""
-    return (
-        f"{title_prefix}【时间】{report_time or '未知'}\n"
-        f"【来源】{source or '未知'}\n"
-        f"【分类】{_display_category(category)}\n"
-        f"【重要性】{_display_importance(importance)}\n"
-        f"【影响范围】{market_scope or '其他'}\n"
-        f"【相关板块】{_format_related_sectors(related_sectors)}\n"
-        f"【摘要】{_soften_trading_language(summary)}\n"
-        f"【可能影响】{_soften_trading_language(impact)}\n"
-        f"【原文链接】{links or '未知'}"
-    )
+    """Format Telegram content as a brief, not a field-by-field report.
+
+    ``category`` and ``importance`` remain accepted because callers use them for
+    classification, but they are intentionally not repeated to readers. Urgency
+    belongs in the message title; ordinary messages should lead with the useful
+    information instead of metadata.
+    """
+    display_title = str(title or "市场更新").strip()
+    icon = _title_icon(display_title)
+    heading = display_title if display_title.startswith(icon) else f"{icon} {display_title}"
+    if report_time:
+        heading = f"{heading} · {report_time}"
+
+    parts: list[str] = [heading] if include_title else []
+    context: list[str] = []
+    if _is_display_value(source):
+        context.append(f"来源：{source}")
+    sectors = _format_related_sectors(related_sectors)
+    if _is_display_value(sectors):
+        context.append(f"涉及：{sectors}")
+    if context:
+        parts.append(" · ".join(context))
+
+    clean_summary = _clean_message_text(summary)
+    if clean_summary:
+        parts.append(clean_summary)
+
+    clean_impact = _clean_message_text(impact)
+    if _is_display_value(clean_impact):
+        parts.append(f"怎么看\n{clean_impact}")
+
+    clean_links = _clean_message_text(links)
+    if _is_display_value(clean_links):
+        parts.append(f"原文\n{clean_links}")
+
+    return "\n\n".join(parts)

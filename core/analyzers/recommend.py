@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 
 from config import settings
@@ -83,6 +84,9 @@ def run_recommend() -> None:
         return
 
     try:
+        pick_dir = os.path.dirname(settings.PICK_FILE)
+        if pick_dir:
+            os.makedirs(pick_dir, exist_ok=True)
         with open(settings.PICK_FILE, "w", encoding="utf-8") as file:
             json.dump(pick_data, file, ensure_ascii=False, indent=2)
     except Exception as exc:

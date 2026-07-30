@@ -511,3 +511,27 @@ class MonitorStore:
             if isinstance(payload, dict):
                 payloads.append(payload)
         return payloads
+
+    def prune(self, now: datetime, retention_days: int) -> dict[str, int]:
+        """Remove only expired monitor history, never active event tracking."""
+        cutoff = _as_utc_text(now - timedelta(days=max(1, retention_days)))
+        with self._connect() as connection:
+            deleted = {
+                "news_events": connection.execute(
+                    "DELETE FROM news_events WHERE received_at < ?", (cutoff,)
+                ).rowcount,
+                "market_quotes": connection.execute(
+                    "DELETE FROM market_quotes WHERE observed_at < ?", (cutoff,)
+                ).rowcount,
+                "monitor_alerts": connection.execute(
+                    "DELETE FROM monitor_alerts WHERE updated_at < ?", (cutoff,)
+                ).rowcount,
+                "news_trackers": connection.execute(
+                    """
+                    DELETE FROM news_trackers
+                    WHERE status != 'tracking' AND created_at < ?
+                    """,
+                    (cutoff,),
+                ).rowcount,
+            }
+        return {name: max(0, count) for name, count in deleted.items()}
