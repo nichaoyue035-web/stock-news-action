@@ -200,6 +200,7 @@ TRUSTED_URGENT_SOURCE_HOSTS = (
     "ecb.europa.eu",
     "bis.org",
     "hkex.com",
+    "sse.com.cn",
 )
 SMALL_COMPANY_NEWS_HIGH_IMPACT_KEYWORDS = (
     "停牌",
@@ -493,6 +494,8 @@ def _is_low_value_company_news(item: dict[str, Any]) -> bool:
 
 def _news_alert_severity(item: dict[str, Any]) -> Optional[str]:
     """Classify only high-value news for deterministic, low-latency delivery."""
+    if item.get("discovery_only"):
+        return None
     black_swan_severity = _black_swan_alert_severity(item)
     if black_swan_severity:
         return black_swan_severity

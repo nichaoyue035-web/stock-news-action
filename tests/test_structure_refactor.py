@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -250,7 +250,7 @@ def test_monitor_marks_untrusted_event_for_verification():
 
 
 def test_monitor_trusts_first_batch_official_rss_sources():
-    for host in ("ecb.europa.eu", "bis.org", "hkex.com"):
+    for host in ("ecb.europa.eu", "bis.org", "hkex.com", "sse.com.cn"):
         item = {
             "title": "Payment system outage disrupts market settlement",
             "digest": "",
@@ -259,6 +259,19 @@ def test_monitor_trusts_first_batch_official_rss_sources():
             "importance": "high",
         }
         assert _black_swan_alert_severity(item) == "紧急"
+
+
+def test_monitor_never_pushes_unverified_discovery_leads():
+    item = {
+        "title": "GDELT 线索｜major earthquake disrupts shipping",
+        "digest": "仅作线索，未核验原文。",
+        "source": "GDELT 线索",
+        "link": "https://example.com/news/1",
+        "importance": "high",
+        "discovery_only": True,
+    }
+
+    assert _news_alert_severity(item) is None
 
 
 def test_monitor_keeps_specific_cyber_event_from_trusted_source():
@@ -594,6 +607,127 @@ def test_monitor_fast_fetch_skips_ai_preprocessing(monkeypatch):
     assert data_fetcher.get_news(
         20, semantic_dedup=False, translate_external=False
     ) == []
+
+
+def test_second_batch_sec_edgar_requires_explicit_configuration(monkeypatch):
+    import core.data_fetcher as data_fetcher
+
+    monkeypatch.setattr(data_fetcher.settings, "SEC_WATCHLIST_TICKERS", [])
+    data_fetcher.reset_data_source_health()
+
+    assert data_fetcher._fetch_sec_edgar_filings(60) == []
+    assert data_fetcher.get_data_source_health()["SEC EDGAR"]["status"] == "skipped"
+
+
+def test_second_batch_sec_edgar_normalizes_recent_filing(monkeypatch):
+    import core.data_fetcher as data_fetcher
+
+    accepted_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    def fake_get(url, **_kwargs):
+        if url == data_fetcher.SEC_TICKERS_URL:
+            return Response(
+                {"0": {"ticker": "TEST", "cik_str": 1234, "title": "Test Corp"}}
+            )
+        assert url == data_fetcher.SEC_SUBMISSIONS_URL.format(cik="0000001234")
+        return Response(
+            {
+                "filings": {
+                    "recent": {
+                        "form": ["8-K"],
+                        "acceptanceDateTime": [accepted_at],
+                        "accessionNumber": ["0000001234-26-000001"],
+                        "primaryDocument": ["form8k.htm"],
+                        "reportDate": ["2026-07-30"],
+                    }
+                }
+            }
+        )
+
+    monkeypatch.setattr(data_fetcher.settings, "SEC_WATCHLIST_TICKERS", ["TEST"])
+    monkeypatch.setattr(data_fetcher.settings, "SEC_USER_AGENT", "Test Agent test@example.com")
+    monkeypatch.setattr(data_fetcher.settings, "SEC_EDGAR_ALLOWED_FORMS", ("8-K",))
+    monkeypatch.setattr(data_fetcher.requests, "get", fake_get)
+
+    items = data_fetcher._fetch_sec_edgar_filings(60)
+
+    assert len(items) == 1
+    assert items[0]["title"] == "SEC 披露｜TEST｜8-K"
+    assert items[0]["market_scope"] == "美股"
+    assert items[0]["link"].endswith("/000000123426000001/form8k.htm")
+
+
+def test_second_batch_cn_official_page_keeps_only_material_dated_notice(monkeypatch):
+    import core.data_fetcher as data_fetcher
+
+    date_text = datetime.now(settings.SHA_TZ).strftime("%Y-%m-%d")
+
+    class Response:
+        text = (
+            "<ul>"
+            f"<li>{date_text}<a href='/material'>关于融资融券监管规则的公告</a></li>"
+            f"<li>{date_text}<a href='/ordinary'>一般会议通知</a></li>"
+            "</ul>"
+        )
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(data_fetcher.requests, "get", lambda *_args, **_kwargs: Response())
+    items = data_fetcher._fetch_cn_official_news(
+        source_name="中国证监会",
+        feed_url="https://www.csrc.gov.cn/",
+        material_terms=data_fetcher.CSRC_MATERIAL_TERMS,
+        minutes_lookback=1440,
+    )
+
+    assert len(items) == 1
+    assert items[0]["title"] == "关于融资融券监管规则的公告"
+    assert items[0]["link"] == "https://www.csrc.gov.cn/material"
+    assert items[0]["published_time_precision"] == "date"
+
+
+def test_second_batch_gdelt_is_discovery_only(monkeypatch):
+    import core.data_fetcher as data_fetcher
+
+    seen_at = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "articles": [
+                    {
+                        "title": "Major earthquake disrupts shipping",
+                        "url": "https://example.com/article",
+                        "domain": "example.com",
+                        "seendate": seen_at,
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(data_fetcher.settings, "GDELT_DISCOVERY_ENABLED", True)
+    monkeypatch.setattr(data_fetcher.settings, "GDELT_DISCOVERY_QUERY", "earthquake")
+    monkeypatch.setattr(data_fetcher.settings, "GDELT_DISCOVERY_MAX_RECORDS", 5)
+    monkeypatch.setattr(data_fetcher.requests, "get", lambda *_args, **_kwargs: Response())
+
+    items = data_fetcher._fetch_gdelt_discovery_news(60)
+
+    assert len(items) == 1
+    assert items[0]["discovery_only"] is True
+    assert _news_alert_severity(items[0]) is None
 
 
 def test_monitor_store_persists_news_and_alert_delivery(tmp_path):

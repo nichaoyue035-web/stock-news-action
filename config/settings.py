@@ -73,6 +73,14 @@ def _env_positive_float(name, default):
     return value if value > 0 else default
 
 
+def _env_enabled(name, default=False):
+    """Read an explicit boolean feature switch from the environment."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _parse_integer_list(raw_value):
     """Parse a comma-separated allowlist while ignoring malformed entries."""
     values = []
@@ -92,6 +100,42 @@ CUSTOM_NEWS_RSS = _parse_rss_url_list(os.getenv("CUSTOM_NEWS_RSS", ""))
 
 # 合并后的外部信息源列表（海外 + 自定义）
 EXTERNAL_NEWS_RSS = [url for url in [GLOBAL_NEWS_RSS, *CUSTOM_NEWS_RSS] if url]
+
+# Second-batch dedicated sources. SEC is opt-in because the SEC requires a
+# declared user agent and a focused watchlist. The official China sources and
+# GDELT are also feature-switched so deployment does not silently broaden news
+# coverage before they are verified in the target environment.
+SEC_WATCHLIST_TICKERS = [
+    ticker.upper()
+    for ticker in _parse_rss_url_list(os.getenv("SEC_WATCHLIST_TICKERS", ""))
+    if ticker.strip()
+]
+SEC_USER_AGENT = os.getenv("SEC_USER_AGENT", "").strip()
+SEC_MAX_FILINGS_PER_TICKER = _env_positive_int(
+    "SEC_MAX_FILINGS_PER_TICKER", 3
+)
+SEC_EDGAR_ALLOWED_FORMS = tuple(
+    form.upper()
+    for form in _parse_rss_url_list(
+        os.getenv("SEC_EDGAR_ALLOWED_FORMS", "8-K,6-K,10-Q,10-K,20-F,40-F")
+    )
+)
+
+CSRC_NEWS_ENABLED = _env_enabled("CSRC_NEWS_ENABLED")
+SSE_ANNOUNCEMENTS_ENABLED = _env_enabled("SSE_ANNOUNCEMENTS_ENABLED")
+CN_OFFICIAL_MAX_ITEMS = _env_positive_int("CN_OFFICIAL_MAX_ITEMS", 10)
+
+GDELT_DISCOVERY_ENABLED = _env_enabled("GDELT_DISCOVERY_ENABLED")
+GDELT_DISCOVERY_MAX_RECORDS = _env_positive_int(
+    "GDELT_DISCOVERY_MAX_RECORDS", 12
+)
+GDELT_DISCOVERY_QUERY = os.getenv(
+    "GDELT_DISCOVERY_QUERY",
+    '"military strike" OR blockade OR "state of emergency" OR "bank run" '
+    'OR "sovereign default" OR "nuclear accident" OR tsunami OR '
+    '"major earthquake" OR cyberattack OR "oil supply disruption" OR '
+    '"payment system outage" OR "trade embargo" OR "capital controls"',
+).strip()
 
 # 分钟级监控配置。WATCHLIST_CODES 为空时，监控仍会运行新闻提醒，但跳过行情提醒。
 WATCHLIST_CODES = [
