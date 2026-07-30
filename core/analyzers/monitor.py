@@ -197,6 +197,9 @@ TRUSTED_URGENT_SOURCE_HOSTS = (
     "ft.com",
     "wsj.com",
     "bloomberg.com",
+    "ecb.europa.eu",
+    "bis.org",
+    "hkex.com",
 )
 SMALL_COMPANY_NEWS_HIGH_IMPACT_KEYWORDS = (
     "停牌",

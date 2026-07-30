@@ -249,6 +249,18 @@ def test_monitor_marks_untrusted_event_for_verification():
     assert _black_swan_alert_severity(item) == "待核实"
 
 
+def test_monitor_trusts_first_batch_official_rss_sources():
+    for host in ("ecb.europa.eu", "bis.org", "hkex.com"):
+        item = {
+            "title": "Payment system outage disrupts market settlement",
+            "digest": "",
+            "source": host,
+            "link": f"https://www.{host}/news/1",
+            "importance": "high",
+        }
+        assert _black_swan_alert_severity(item) == "紧急"
+
+
 def test_monitor_keeps_specific_cyber_event_from_trusted_source():
     item = {
         "title": "Payment system outage disrupts market settlement",
