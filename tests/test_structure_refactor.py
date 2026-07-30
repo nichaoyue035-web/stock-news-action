@@ -261,7 +261,7 @@ def test_monitor_keeps_specific_cyber_event_from_trusted_source():
     assert _black_swan_alert_severity(item) == "紧急"
 
 
-def test_urgent_news_alert_includes_structured_market_impact():
+def test_urgent_news_alert_is_compact_and_keeps_the_market_essence():
     item = {
         "title": "突发导弹袭击升级",
         "digest": "",
@@ -276,11 +276,12 @@ def test_urgent_news_alert_includes_structured_market_impact():
 
     content = _build_news_alert(item, "紧急")
 
-    assert "【确认度】" in content
-    assert "【传导路径】" in content
-    assert "【A股映射】" in content
-    assert "【后续验证】" in content
-    assert "石油石化" in content
+    assert "🚨 紧急" in content
+    assert "事件：突发导弹袭击升级" in content
+    assert "市场含义：风险取决于冲突是否扩大并扰乱油运。" in content
+    assert "关注：看油价、运价、黄金与军工" in content
+    assert "【确认度】" not in content
+    assert "【分类】" not in content
 
 
 def test_unverified_news_alert_explains_verification_without_sector_call():
@@ -318,12 +319,10 @@ def test_important_monetary_policy_alert_has_specific_market_analysis():
 
     content = _build_news_alert(item, "重要")
 
-    assert "【确认度】" in content
-    assert "【传导路径】" in content
-    assert "【A股映射】" in content
-    assert "【后续验证】" in content
-    assert "资金面、无风险利率和融资成本" in content
-    assert "金融、地产" in content
+    assert "🔔 重要" in content
+    assert "市场含义：关键在资金与利率预期是否真正改变。" in content
+    assert "关注：看正式工具、期限和规模，以及资金利率、收益率与金融地产反应。" in content
+    assert "【重要性】" not in content
 
 
 def test_important_macro_alert_distinguishes_growth_data_from_policy():
@@ -341,9 +340,9 @@ def test_important_macro_alert_distinguishes_growth_data_from_policy():
 
     content = _build_news_alert(item, "重要")
 
-    assert "盈利和风险偏好预期" in content
-    assert "同比、环比、季调口径及预期差" in content
-    assert "资源、汽车" in content
+    assert "关键点：制造业订单改善" in content
+    assert "市场含义：关键是数据相对预期的变化，而不是单看绝对数。" in content
+    assert "关注：看预期差、订单库存及资源、汽车与顺周期方向是否确认。" in content
 
 
 def test_important_company_alert_does_not_overstate_sector_signal():
@@ -361,9 +360,9 @@ def test_important_company_alert_does_not_overstate_sector_signal():
 
     content = _build_news_alert(item, "重要")
 
-    assert "重大公司事件" in content
-    assert "不把单一公司的公告直接等同于行业趋势" in content
-    assert "交易条款、审批条件、财务影响" in content
+    assert "关键点：等待进一步公告" in content
+    assert "市场含义：先看事项规模、审批条件和财务影响，不直接外推为行业趋势。" in content
+    assert "关注：看正式公告及新能源、同业是否出现独立确认。" in content
 
 
 def test_funds_sends_result_to_primary_bot(monkeypatch):
@@ -733,7 +732,7 @@ def test_monitor_sends_each_important_news_event_once(monkeypatch, tmp_path):
     monitor.run_monitor({})
 
     assert len(sent_messages) == 1
-    assert "重要市场提醒" in sent_messages[0]
+    assert "🔔 重要" in sent_messages[0]
 
 
 def test_monitor_deduplicates_cross_source_important_and_urgent_alerts(
@@ -805,8 +804,8 @@ def test_monitor_deduplicates_cross_source_important_and_urgent_alerts(
     monitor.run_monitor({})
 
     assert len(sent_messages) == 2
-    assert sum("重要市场提醒" in message for message in sent_messages) == 1
-    assert sum("紧急市场提醒" in message for message in sent_messages) == 1
+    assert sum("🔔 重要" in message for message in sent_messages) == 1
+    assert sum("🚨 紧急" in message for message in sent_messages) == 1
 
 
 def test_monitor_keeps_material_numerical_news_update(monkeypatch, tmp_path):

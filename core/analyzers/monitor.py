@@ -655,17 +655,19 @@ def _build_news_alert(item: dict[str, Any], severity: str) -> str:
 
     is_urgent = severity == "紧急"
     is_unverified = severity == "待核实"
-    if is_urgent:
-        title = "紧急市场提醒"
-        importance = "高（紧急）"
-        impact = _build_monitor_impact(item, severity)
-    elif is_unverified:
+    if is_urgent or severity == "重要":
+        return _format_compact_market_alert(
+            item,
+            severity=severity,
+            report_time=_format_news_time(item),
+        )
+    if is_unverified:
         title = "待核实风险提示"
         importance = "中（待核实）"
         impact = _build_monitor_impact(item, severity)
     else:
-        title = "重要市场提醒"
-        importance = "高"
+        title = "紧急市场提醒"
+        importance = "高（紧急）"
         impact = _build_monitor_impact(item, severity)
     return _format_market_message(
         title,
@@ -679,6 +681,158 @@ def _build_news_alert(item: dict[str, Any], severity: str) -> str:
         market_scope=str(item.get("market_scope") or "其他"),
         related_sectors=item.get("related_sectors"),
     )
+
+
+def _compact_alert_text(value: Any, limit: int = 160) -> str:
+    """Keep a factual line readable without inventing a summary."""
+    text = " ".join(str(value or "").split()).strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _compact_market_insight(
+    item: dict[str, Any], severity: str
+) -> tuple[str, str]:
+    """Return the one market question and the one confirmation point that matter."""
+    text = f"{item.get('title', '')} {item.get('digest', '')}".lower()
+    sectors = _related_sector_text(item)
+
+    if severity == "紧急":
+        if _contains_risk_term(text, MILITARY_RISK_TERMS):
+            return (
+                "风险取决于冲突是否扩大并扰乱油运。",
+                "看油价、运价、黄金与军工是否同步反应；核对范围、航道和官方表态。",
+            )
+        if _contains_risk_term(text, MARKET_INFRASTRUCTURE_RISK_TERMS):
+            return (
+                "关键在交易、支付或清算受影响的范围和恢复时间。",
+                "看监管公告、是否限交，以及金融与高换手板块的流动性。",
+            )
+        if _contains_risk_term(text, FINANCIAL_RISK_TERMS):
+            return (
+                "关键在风险是否扩散为融资与信用压力。",
+                "看受影响机构、流动性支持和信用利差是否持续异常。",
+            )
+        if _contains_risk_term(text, SANCTIONS_RISK_TERMS):
+            return (
+                "关键在限制范围、豁免和替代空间。",
+                "看制裁对象、生效时间及供应链、汇率的实际反应。",
+            )
+        if _contains_risk_term(text, ENERGY_SUPPLY_RISK_TERMS):
+            return (
+                "关键在油气或航运是否出现实际中断。",
+                "看油价、运价、库存与替代运力，而不是只看标题。",
+            )
+        if _contains_risk_term(text, NATURAL_DISASTER_RISK_TERMS):
+            return (
+                "关键在灾害是否伤及关键产能或基础设施。",
+                "看官方伤损、停产与恢复进度。",
+            )
+        return (
+            "关键在事实是否持续升级为跨市场风险。",
+            "优先核对权威原文与核心价格变量的同步反应。",
+        )
+
+    category = str(item.get("category") or "other").strip().lower()
+    if category == "policy":
+        if _contains_risk_term(text, MONETARY_POLICY_TERMS):
+            return (
+                "关键在资金与利率预期是否真正改变。",
+                "看正式工具、期限和规模，以及资金利率、收益率与金融地产反应。",
+            )
+        if _contains_risk_term(text, FISCAL_POLICY_TERMS):
+            return (
+                "关键在资金是否到位、项目能否落地。",
+                f"看支持对象、落地时间及{sectors}的订单和开工。",
+            )
+        if _contains_risk_term(text, CAPITAL_MARKET_POLICY_TERMS):
+            return (
+                "关键在规则边界和生效时间。",
+                "看监管原文、券商与金融 IT 的反应，以及成交结构。",
+            )
+        if _contains_risk_term(text, TRADE_POLICY_TERMS):
+            return (
+                "关键在对象、税率与豁免条款。",
+                f"看出口链、物流与{sectors}的订单、成本变化。",
+            )
+        return (
+            "关键在正式文件是否超出原有预期，以及落地节奏。",
+            f"看细则、执行时间和{sectors}的价格、成交反应。",
+        )
+
+    if category == "macro":
+        if _contains_risk_term(text, GROWTH_DATA_TERMS):
+            return (
+                "关键是数据相对预期的变化，而不是单看绝对数。",
+                f"看预期差、订单库存及{sectors}与顺周期方向是否确认。",
+            )
+        if _contains_risk_term(text, INFLATION_RATE_TERMS):
+            return (
+                "关键在利率路径是否被重新定价。",
+                "看核心数据、债券收益率与汇率是否同步变化。",
+            )
+        if _contains_risk_term(text, CURRENCY_RATE_TERMS):
+            return (
+                "关键在汇率波动是否传导为跨境资金或成本压力。",
+                "看汇率、利率和资金流的联动，而不是单一时点波动。",
+            )
+        return (
+            "关键在预期差能否被后续数据验证。",
+            "看数据口径、修订和利率、汇率、成交的同步反应。",
+        )
+
+    if category == "capital_flow":
+        return (
+            "关键在资金是否连续，而不是单日流入或流出。",
+            f"看{sectors}的成交、价格与资金是否同向延续。",
+        )
+    if category == "market_sentiment":
+        return (
+            "关键在情绪是否得到成交和市场广度确认。",
+            "看成交额、涨跌家数、指数与资金是否同步。",
+        )
+    if category == "industry":
+        return (
+            "关键在供需、价格或订单是否出现真实变化。",
+            f"看{sectors}上下游的价格、库存和订单，而非单条新闻。",
+        )
+    if category == "company":
+        return (
+            "先看事项规模、审批条件和财务影响，不直接外推为行业趋势。",
+            f"看正式公告及{sectors}、同业是否出现独立确认。",
+        )
+    if category == "overseas":
+        return (
+            "关键在海外变量是否落地到利率、汇率或商品价格。",
+            f"看权威原文及{sectors}与人民币、商品价格的同步反应。",
+        )
+    return (
+        "先确认事实范围，再判断是否改变预期或资金定价。",
+        f"看原始来源和{sectors}的价格、成交是否给出确认。",
+    )
+
+
+def _format_compact_market_alert(
+    item: dict[str, Any], *, severity: str, report_time: str
+) -> str:
+    """Format important and urgent alerts around only the decision-relevant facts."""
+    label = "🚨 紧急" if severity == "紧急" else "🔔 重要"
+    source = _compact_alert_text(item.get("source") or "未知来源", 48)
+    headline = _compact_alert_text(item.get("title") or "未知事件")
+    digest = _compact_alert_text(item.get("digest"))
+    takeaway, watch = _compact_market_insight(item, severity)
+    lines = [
+        f"{label}｜{report_time or '未知时间'}｜{source}",
+        f"事件：{headline}",
+    ]
+    if digest and digest != headline:
+        lines.append(f"关键点：{digest}")
+    lines.extend((f"市场含义：{takeaway}", f"关注：{watch}"))
+    link = _compact_alert_text(item.get("link"), 300)
+    if link:
+        lines.append(f"原文：{link}")
+    return "\n".join(lines)
 
 
 def _related_sector_text(item: dict[str, Any]) -> str:
