@@ -14,6 +14,7 @@ from core.analyzers.monitor import (
     _is_monitor_alert_importance,
     _news_alert_severity,
     _normalise_watchlist_codes,
+    is_three_hour_market_summary_item,
 )
 from core.monitor_store import MonitorStore, news_event_key
 from utils.notifier import _split_message
@@ -549,7 +550,7 @@ def test_after_market_separates_news_facts_from_structured_impact(monkeypatch):
     assert "【可能影响】【收盘结论】" in sent_messages[0][0]
 
 
-def test_monitor_classifies_market_news_without_ai():
+def test_monitor_defers_important_market_news_to_three_hour_summary():
     policy_item = {
         "title": "国务院发布资本市场新政策",
         "digest": "",
@@ -565,8 +566,10 @@ def test_monitor_classifies_market_news_without_ai():
         "market_scope": "公司",
     }
 
-    assert _news_alert_severity(policy_item) == "重要"
+    assert _news_alert_severity(policy_item) is None
+    assert is_three_hour_market_summary_item(policy_item)
     assert _news_alert_severity(ordinary_company_item) is None
+    assert not is_three_hour_market_summary_item(ordinary_company_item)
     assert _news_alert_severity(
         {
             "title": "突发军事冲突升级",
@@ -576,6 +579,77 @@ def test_monitor_classifies_market_news_without_ai():
             "importance": "high",
         }
     ) == "紧急"
+
+
+def test_three_hour_summary_includes_important_domestic_market_news(monkeypatch):
+    import core.analyzer as analyzer
+    import core.analyzers.global_macro as global_macro
+    import core.runtime as runtime
+
+    item = {
+        "title": "国务院发布资本市场新政策",
+        "digest": "政策文件明确优化长期资金入市安排。",
+        "source": "eastmoney",
+        "link": "https://example.com/policy",
+        "category": "policy",
+        "importance": "high",
+        "market_scope": "市场",
+        "related_sectors": ["金融"],
+    }
+    sent_messages = []
+    prompts = []
+
+    monkeypatch.setattr(global_macro, "get_news", lambda minutes: [item])
+    monkeypatch.setattr(
+        analyzer,
+        "_get_ai_response_with_health",
+        lambda prompt: prompts.append(prompt)
+        or "【事件】资本市场政策调整\n【关键事实】已发布正式文件。\n【市场含义】关注资金预期变化。\n【后续验证】核对实施细则。",
+    )
+    monkeypatch.setattr(
+        runtime,
+        "send_tg",
+        lambda content, **kwargs: sent_messages.append(content) or True,
+    )
+
+    global_macro.run_global({})
+
+    assert len(sent_messages) == 1
+    assert "三小时市场总结" in sent_messages[0]
+    assert "国务院发布资本市场新政策" in prompts[0]
+
+
+def test_three_hour_summary_is_silent_when_no_news_passes_threshold(monkeypatch):
+    import core.analyzer as analyzer
+    import core.analyzers.global_macro as global_macro
+    import core.runtime as runtime
+
+    item = {
+        "title": "公司发布季度业绩",
+        "digest": "常规经营信息。",
+        "source": "eastmoney",
+        "link": "https://example.com/company",
+        "category": "company",
+        "importance": "high",
+        "market_scope": "公司",
+    }
+    sent_messages = []
+
+    monkeypatch.setattr(global_macro, "get_news", lambda minutes: [item])
+    monkeypatch.setattr(
+        analyzer,
+        "_get_ai_response_with_health",
+        lambda *args, **kwargs: pytest.fail("不应为普通公司新闻调用 AI"),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "send_tg",
+        lambda content, **kwargs: sent_messages.append(content) or True,
+    )
+
+    global_macro.run_global({})
+
+    assert sent_messages == []
 
 
 def test_normalise_watchlist_codes_keeps_valid_unique_codes():
@@ -948,7 +1022,7 @@ def test_monitor_store_prevents_overlapping_cycles(tmp_path):
     assert store.acquire_lock("monitor", now + timedelta(minutes=1))
 
 
-def test_monitor_sends_each_important_news_event_once(monkeypatch, tmp_path):
+def test_monitor_defers_important_news_without_minute_level_delivery(monkeypatch, tmp_path):
     import core.analyzers.monitor as monitor
     import core.runtime as runtime
 
@@ -975,11 +1049,10 @@ def test_monitor_sends_each_important_news_event_once(monkeypatch, tmp_path):
     monitor.run_monitor({})
     monitor.run_monitor({})
 
-    assert len(sent_messages) == 1
-    assert "🔔 重要" in sent_messages[0]
+    assert sent_messages == []
 
 
-def test_monitor_deduplicates_cross_source_important_and_urgent_alerts(
+def test_monitor_deduplicates_cross_source_urgent_alerts(
     monkeypatch, tmp_path
 ):
     import core.analyzers.monitor as monitor
@@ -1047,12 +1120,11 @@ def test_monitor_deduplicates_cross_source_important_and_urgent_alerts(
 
     monitor.run_monitor({})
 
-    assert len(sent_messages) == 2
-    assert sum("🔔 重要" in message for message in sent_messages) == 1
+    assert len(sent_messages) == 1
     assert sum("🚨 紧急" in message for message in sent_messages) == 1
 
 
-def test_monitor_keeps_material_numerical_news_update(monkeypatch, tmp_path):
+def test_monitor_defers_material_policy_updates_to_three_hour_summary(monkeypatch, tmp_path):
     import core.analyzers.monitor as monitor
     import core.runtime as runtime
 
@@ -1096,7 +1168,7 @@ def test_monitor_keeps_material_numerical_news_update(monkeypatch, tmp_path):
 
     monitor.run_monitor({})
 
-    assert len(sent_messages) == 2
+    assert sent_messages == []
 
 
 def test_monitor_sends_unsent_news_after_per_cycle_limit(monkeypatch, tmp_path):
@@ -1106,15 +1178,15 @@ def test_monitor_sends_unsent_news_after_per_cycle_limit(monkeypatch, tmp_path):
     now = datetime.now(settings.SHA_TZ)
     items = [
         {
-            "title": f"国务院发布资本市场新政策 {index}",
-            "digest": "测试",
-            "source": "eastmoney",
+            "title": f"Payment system outage disrupts market settlement {index}",
+            "digest": "The outage interrupted market settlement services.",
+            "source": "reuters",
             "link": f"https://example.com/news/{index}",
             "datetime": now,
-            "category": "policy",
+            "category": "overseas",
             "importance": "high",
-            "market_scope": "市场",
-            "related_sectors": ["金融"],
+            "market_scope": "海外",
+            "related_sectors": ["金融 IT"],
         }
         for index in range(4)
     ]

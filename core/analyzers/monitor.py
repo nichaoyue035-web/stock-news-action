@@ -501,15 +501,12 @@ def _is_low_value_company_news(item: dict[str, Any]) -> bool:
     )
 
 
-def _news_alert_severity(item: dict[str, Any]) -> Optional[str]:
-    """Classify only high-value news for deterministic, low-latency delivery."""
+def is_three_hour_market_summary_item(item: dict[str, Any]) -> bool:
+    """Keep high-value market news for the three-hour market summary."""
     if item.get("discovery_only"):
-        return None
-    black_swan_severity = _black_swan_alert_severity(item)
-    if black_swan_severity:
-        return black_swan_severity
+        return False
     if _is_low_value_company_news(item) or not _is_monitor_alert_importance(item):
-        return None
+        return False
 
     category = str(item.get("category") or "").strip().lower()
     scope = str(item.get("market_scope") or "").strip()
@@ -518,8 +515,15 @@ def _news_alert_severity(item: dict[str, Any]) -> Optional[str]:
         keyword in text for keyword in SMALL_COMPANY_NEWS_HIGH_IMPACT_KEYWORDS
     )
     if category != "company" or scope not in {"", "公司", "其他"} or is_major_company_event:
-        return "重要"
-    return None
+        return True
+    return False
+
+
+def _news_alert_severity(item: dict[str, Any]) -> Optional[str]:
+    """Classify only hard market risks for minute-level delivery."""
+    if item.get("discovery_only"):
+        return None
+    return _black_swan_alert_severity(item)
 
 
 def _is_news_in_alert_window(item: dict[str, Any], now: datetime) -> bool:
