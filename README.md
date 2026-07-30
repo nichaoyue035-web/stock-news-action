@@ -2,7 +2,7 @@
 
 ## 1. 项目简介
 
-`stock-news-action` 是一个面向个人使用的投资信息流自动化项目。它可以由 GitHub Actions 定时触发，也可以在本地手动运行；核心流程是用 Python 抓取 A 股市场新闻、行业资金流、热门股、海外 RSS 新闻，再调用 DeepSeek 进行摘要、翻译和分析，最后通过 Telegram Bot 推送给用户。
+`stock-news-action` 是一个面向个人使用的投资信息流自动化项目。生产任务由 VPS 定时运行，也可以在本地手动运行；核心流程是用 Python 抓取 A 股市场新闻、行业资金流、热门股、海外 RSS 新闻，再调用 DeepSeek 进行摘要、翻译和分析，最后通过 Telegram Bot 推送给用户。
 
 这个项目更适合作为：
 
@@ -33,7 +33,7 @@
 
 ## 3. 工作流程
 
-1. **GitHub Actions 或本地命令触发**：按计划任务或手动执行 `python main.py <mode>`。
+1. **VPS 定时器或本地命令触发**：按计划任务或手动执行 `python main.py <mode>`。
 2. **Python 主程序读取运行模式**：`main.py` 根据命令行参数分发到不同模式。
 3. **抓取市场数据和新闻**：根据模式调用新闻、资金流、热门股、行情或 RSS 数据源。
 4. **按模式生成摘要 / 翻译 / 分析**：需要 AI 的模式会根据 `prompts.json` 或默认提示词调用 DeepSeek；实时 `monitor` 走确定性规则，不等待 AI。
@@ -309,7 +309,7 @@ python main.py daily
 
 ## 11. VPS 生产调度与健康检查
 
-GitHub Actions 工作流现在主要用于手动回退，生产定时任务由 VPS 承担。仓库提供
+GitHub Actions 只保留代码测试；所有 Telegram 生产推送都由 VPS 承担。仓库提供
 `deploy/systemd/` 示例，避免生产调度只存在于服务器的手工配置中。
 
 建议部署目录和专用用户：
@@ -357,8 +357,7 @@ python main.py health
 `stock-news-funds.timer` 会在每个工作日上海时间 15:10 运行主力资金雷达。若服务器
 使用 `stock-news-action@.service` 模板，定时器也必须使用相同前缀：将 `Unit=` 改为
 `stock-news-action@funds.service`，并以 `stock-news-action-funds.timer` 的名称启用。
-资金雷达会使用现有的 `TG_BOT_TOKEN` 和 `TG_CHAT_ID`，与原有 GitHub Actions 推送
-保持一致。
+资金雷达会使用现有的 `TG_BOT_TOKEN` 和 `TG_CHAT_ID`。
 
 市场监控的“紧急市场提醒”使用紧凑格式：先给事件与关键事实，再只指出一个最关键的
 市场含义和一个应核对的变量。三小时市场总结按政策、宏观、资金、行业、公司或海外类别
