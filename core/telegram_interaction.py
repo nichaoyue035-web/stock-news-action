@@ -1,4 +1,4 @@
-"""Long-poll Telegram callback listener for the interactive market radar."""
+"""Long-poll Telegram listener for interactive market alerts and radar candidates."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ def _telegram_post(method: str, payload: dict[str, Any]) -> dict[str, Any] | Non
 def _get_updates(offset: int | None) -> list[dict[str, Any]] | None:
     payload: dict[str, Any] = {
         "timeout": 25,
-        "allowed_updates": ["callback_query"],
+        "allowed_updates": ["callback_query", "message"],
     }
     if offset is not None:
         payload["offset"] = offset
@@ -81,6 +81,30 @@ def _handle_callback(callback: dict[str, Any], now: datetime) -> str:
     return handle_radar_callback(callback, now)
 
 
+def _handle_private_id_command(message: dict[str, Any]) -> bool:
+    """Reply to a private /id request without authorizing the sender automatically."""
+    chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+    sender = message.get("from") if isinstance(message.get("from"), dict) else {}
+    text = str(message.get("text") or "").strip().lower()
+    if text.split("@", 1)[0] not in {"/id", "/start"}:
+        return False
+    chat_id = str(chat.get("id") or "")
+    user_id = str(sender.get("id") or "")
+    if chat.get("type") != "private" or not user_id or chat_id != user_id:
+        return False
+    _telegram_post(
+        "sendMessage",
+        {
+            "chat_id": chat_id,
+            "text": (
+                f"你的 Telegram 数字 ID：{user_id}\n"
+                "请将这串数字提供给管理员，以启用群组里的事件跟踪按钮。"
+            ),
+        },
+    )
+    return True
+
+
 def run_telegram_listener() -> None:
     """Run one dedicated process; Telegram long-polling needs no public web port."""
     if not settings.INTERACTION_BOT_TOKEN or not settings.INTERACTION_CHAT_ID:
@@ -98,6 +122,10 @@ def run_telegram_listener() -> None:
         for update in updates:
             update_id = update.get("update_id")
             try:
+                message = update.get("message")
+                if isinstance(message, dict):
+                    _handle_private_id_command(message)
+                    continue
                 callback = update.get("callback_query")
                 if not isinstance(callback, dict):
                     continue

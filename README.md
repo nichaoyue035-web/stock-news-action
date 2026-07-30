@@ -277,7 +277,7 @@ python main.py daily
 
 为重要、紧急市场提醒启用 `MARKET_ALERT_INTERACTION_ENABLED=1` 后，消息会附带“继续跟踪 2 小时”“停止跟踪”和“查看原文”。点击后，系统仍按一分钟周期检查已接入新闻源；仅在出现至少两个标题关键词重合的新来源时推送后续，并在两小时结束时给出一次结束提示。它不会自动搜索全网，也不会产生买卖指令。
 
-若提醒发在群组，必须把你自己的 Telegram 数字用户 ID 写入 `TG_INTERACTION_ALLOWED_USER_IDS`，例如 `TG_INTERACTION_ALLOWED_USER_IDS=123456789`；否则群成员不应能改变跟踪状态。私聊中则自动仅允许该私聊用户操作。
+若提醒发在群组，必须把你自己的 Telegram 数字用户 ID 写入 `TG_INTERACTION_ALLOWED_USER_IDS`，例如 `TG_INTERACTION_ALLOWED_USER_IDS=123456789`；否则群成员不应能改变跟踪状态。私聊中则自动仅允许该私聊用户操作。需要查询 ID 时，打开该机器人私聊并发送 `/id`，机器人会只在私聊中回复你的数字 ID。
 
 ## 10. 风险提示与限制
 

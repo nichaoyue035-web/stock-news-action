@@ -96,6 +96,39 @@ def test_callback_extends_only_for_an_allowed_user(monkeypatch, tmp_path):
     assert store.get_candidate(candidate["candidate_id"])["status"] == "tracking"
 
 
+def test_listener_replies_to_private_id_request_without_authorizing_user(monkeypatch):
+    from core import telegram_interaction
+
+    calls = []
+    monkeypatch.setattr(
+        telegram_interaction,
+        "_telegram_post",
+        lambda method, payload: calls.append((method, payload)) or {},
+    )
+    private_message = {
+        "text": "/id",
+        "from": {"id": 999},
+        "chat": {"id": 999, "type": "private"},
+    }
+    group_message = {
+        "text": "/id",
+        "from": {"id": 999},
+        "chat": {"id": -100, "type": "supergroup"},
+    }
+
+    assert telegram_interaction._handle_private_id_command(private_message) is True
+    assert telegram_interaction._handle_private_id_command(group_message) is False
+    assert calls == [
+        (
+            "sendMessage",
+            {
+                "chat_id": "999",
+                "text": "你的 Telegram 数字 ID：999\n请将这串数字提供给管理员，以启用群组里的事件跟踪按钮。",
+            },
+        )
+    ]
+
+
 def test_active_candidate_stops_after_price_invalidation(monkeypatch, tmp_path):
     store = _make_store(tmp_path, monkeypatch)
     now = _a_share_time()
