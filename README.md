@@ -2,7 +2,7 @@
 
 ## 1. 项目简介
 
-`stock-news-action` 是一个面向个人使用的投资信息流自动化项目。它可以由 GitHub Actions 定时触发，也可以在本地手动运行；核心流程是用 Python 抓取 A 股市场新闻、行业资金流、热门股、海外 RSS 新闻，再调用 DeepSeek 进行摘要、翻译和分析，最后通过 Telegram Bot 推送给用户。
+`stock-news-action` 是一个面向个人使用的投资信息流自动化项目。生产任务由 VPS 定时运行，也可以在本地手动运行；核心流程是用 Python 抓取 A 股市场新闻、行业资金流、热门股、海外 RSS 新闻，再调用 DeepSeek 进行摘要、翻译和分析，最后通过 Telegram Bot 推送给用户。
 
 这个项目更适合作为：
 
@@ -33,7 +33,7 @@
 
 ## 3. 工作流程
 
-1. **GitHub Actions 或本地命令触发**：按计划任务或手动执行 `python main.py <mode>`。
+1. **VPS 定时器或本地命令触发**：按计划任务或手动执行 `python main.py <mode>`。
 2. **Python 主程序读取运行模式**：`main.py` 根据命令行参数分发到不同模式。
 3. **抓取市场数据和新闻**：根据模式调用新闻、资金流、热门股、行情或 RSS 数据源。
 4. **按模式生成摘要 / 翻译 / 分析**：需要 AI 的模式会根据 `prompts.json` 或默认提示词调用 DeepSeek；实时 `monitor` 走确定性规则，不等待 AI。
