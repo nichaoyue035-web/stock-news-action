@@ -54,9 +54,13 @@ def candidate_buttons(candidate_id: str) -> dict[str, Any]:
 
 def format_candidate_message(candidate: dict[str, Any]) -> str:
     attributes = candidate["attributes"]
-    price = float(candidate["initial_price"])
-    pct = candidate.get("initial_pct")
+    initial_price = float(candidate["initial_price"])
+    price = float(candidate.get("last_price") or initial_price)
+    pct = candidate.get("last_pct")
+    if pct is None:
+        pct = candidate.get("initial_pct")
     pct_text = f"{float(pct):+.2f}%" if pct is not None else "未知"
+    change_from_initial = (price / initial_price - 1) * 100
     volume = attributes.get("dollar_volume")
     volume_text = (
         f"${float(volume) / 1_000_000:.1f}M"
@@ -71,11 +75,16 @@ def format_candidate_message(candidate: dict[str, Any]) -> str:
         else ""
     )
     lines = [
-        f"🟡 自动追踪｜{market_label(candidate['market'])}",
-        f"{candidate['symbol']} {candidate['name']} · {price:.2f} · 当日 {pct_text}",
+        f"🟢 已确认｜{market_label(candidate['market'])}",
+        f"{candidate['symbol']} {candidate['name']} · 当前 {price:.2f} · 当日 {pct_text}",
+        (
+            f"确认：触发后 {settings.RADAR_CONFIRM_AFTER_MINUTES} 分钟未出现超过 "
+            f"{settings.RADAR_CONFIRM_MAX_REVERSAL_PCT:.1f}% 的反转；"
+            f"相对触发 {change_from_initial:+.2f}%"
+        ),
         f"触发：{evidence}；成交额 {volume_text}",
         f"催化：{catalyst}",
-        f"接下来：{signal_text(attributes)}",
+        "后续：只在确认后明显失效时补充提醒；自动到期不再单独推送。",
         (
             f"停止条件：较触发价回落 {settings.RADAR_INVALIDATION_PCT:.1f}% "
             "以上、行情异常或出现风险信息。"

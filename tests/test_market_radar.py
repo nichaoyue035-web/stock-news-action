@@ -85,16 +85,9 @@ def test_radar_candidate_uses_the_primary_observation_bot(monkeypatch, tmp_path)
     assert store.get_candidate(candidate["candidate_id"])["telegram_chat_id"] == "primary-chat"
 
 
-def test_radar_sends_one_initial_candidate_per_market_session(monkeypatch, tmp_path):
+def test_radar_sends_one_confirmed_candidate_per_market_session(monkeypatch, tmp_path):
     store = _make_store(tmp_path, monkeypatch)
     now = _a_share_time()
-    sent = []
-    monkeypatch.setattr(settings, "RADAR_INTERACTION_BOT_TOKEN", "token")
-    monkeypatch.setattr(settings, "RADAR_INTERACTION_CHAT_ID", "123")
-    monkeypatch.setattr(
-        radar, "send_tg_interactive", lambda *args, **kwargs: sent.append(kwargs) or 456
-    )
-
     create_kwargs = {
         "market": "CN",
         "symbol": "000001",
@@ -106,6 +99,7 @@ def test_radar_sends_one_initial_candidate_per_market_session(monkeypatch, tmp_p
     }
     assert radar._create_candidate(store, now=now, **create_kwargs) is True
     first = store.active_candidates(now)[0]
+    store.set_telegram_delivery(first["candidate_id"], "123", 456, now)
     assert store.close_candidate(first["candidate_id"], "测试结束", now) is True
 
     assert radar._create_candidate(
@@ -114,32 +108,129 @@ def test_radar_sends_one_initial_candidate_per_market_session(monkeypatch, tmp_p
     assert radar._create_candidate(
         store, now=now + timedelta(days=1), **create_kwargs
     ) is True
-    assert len(sent) == 2
 
 
-def test_failed_radar_delivery_does_not_use_the_session_quota(monkeypatch, tmp_path):
+def test_radar_waits_for_confirmation_before_sending(monkeypatch, tmp_path):
+    store = _make_store(tmp_path, monkeypatch)
+    now = _a_share_time()
+    sent = []
+    monkeypatch.setattr(settings, "RADAR_INTERACTION_BOT_TOKEN", "token")
+    monkeypatch.setattr(settings, "RADAR_INTERACTION_CHAT_ID", "123")
+    monkeypatch.setattr(settings, "RADAR_CONFIRM_AFTER_MINUTES", 3)
+    monkeypatch.setattr(settings, "RADAR_CONFIRM_MAX_REVERSAL_PCT", 0.5)
+    monkeypatch.setattr(
+        radar, "send_tg_interactive", lambda *args, **kwargs: sent.append(args[0]) or 456
+    )
+    monkeypatch.setattr(
+        radar,
+        "_fetch_candidate_quote",
+        lambda _: {"name": "测试股", "price": 10.02, "pct": 2.2, "volume": None},
+    )
+
+    assert (
+        radar._create_candidate(
+            store,
+            market="CN",
+            symbol="000001",
+            name="测试股",
+            price=10.0,
+            pct=2.0,
+            volume=None,
+            attributes={"signal": "盘中快速上涨", "evidence": "测试"},
+            now=now,
+        )
+        is True
+    )
+    assert radar._process_active_candidates(store, now + timedelta(minutes=2)) == (1, 0, 0)
+    assert sent == []
+
+    assert radar._process_active_candidates(store, now + timedelta(minutes=3)) == (1, 1, 0)
+    candidate = store.active_candidates(now + timedelta(minutes=3))[0]
+    assert candidate["status"] == "confirmed"
+    assert candidate["telegram_message_id"] == 456
+    assert len(sent) == 1
+    assert "🟢 已确认" in sent[0]
+
+
+def test_radar_discards_a_reversed_silent_candidate(monkeypatch, tmp_path):
+    store = _make_store(tmp_path, monkeypatch)
+    now = _a_share_time()
+    sent = []
+    monkeypatch.setattr(settings, "RADAR_CONFIRM_AFTER_MINUTES", 3)
+    monkeypatch.setattr(settings, "RADAR_CONFIRM_MAX_REVERSAL_PCT", 0.5)
+    monkeypatch.setattr(
+        radar,
+        "send_tg_interactive",
+        lambda *args, **kwargs: sent.append(args) or 456,
+    )
+    monkeypatch.setattr(
+        radar,
+        "_fetch_candidate_quote",
+        lambda _: {"name": "测试股", "price": 9.94, "pct": 1.4, "volume": None},
+    )
+    assert (
+        radar._create_candidate(
+            store,
+            market="CN",
+            symbol="000001",
+            name="测试股",
+            price=10.0,
+            pct=2.0,
+            volume=None,
+            attributes={"signal": "盘中快速上涨", "evidence": "测试"},
+            now=now,
+        )
+        is True
+    )
+    candidate_id = store.active_candidates(now)[0]["candidate_id"]
+
+    assert radar._process_active_candidates(store, now + timedelta(minutes=3)) == (1, 0, 1)
+    candidate = store.get_candidate(candidate_id)
+    assert candidate["status"] == "closed"
+    assert candidate["closed_reason"] == "确认期价格反转"
+    assert sent == []
+
+
+def test_radar_retries_confirmation_delivery_without_using_the_session_quota(monkeypatch, tmp_path):
     store = _make_store(tmp_path, monkeypatch)
     now = _a_share_time()
     deliveries = iter([None, 456])
-    monkeypatch.setattr(settings, "RADAR_INTERACTION_BOT_TOKEN", "token")
-    monkeypatch.setattr(settings, "RADAR_INTERACTION_CHAT_ID", "123")
+    monkeypatch.setattr(settings, "RADAR_CONFIRM_AFTER_MINUTES", 3)
+    monkeypatch.setattr(radar, "send_tg_interactive", lambda *args, **kwargs: next(deliveries))
     monkeypatch.setattr(
-        radar, "send_tg_interactive", lambda *args, **kwargs: next(deliveries)
+        radar,
+        "_fetch_candidate_quote",
+        lambda _: {"name": "测试股", "price": 10.0, "pct": 2.0, "volume": None},
     )
-    create_kwargs = {
-        "market": "CN",
-        "symbol": "000001",
-        "name": "测试股",
-        "price": 10.0,
-        "pct": 2.0,
-        "volume": None,
-        "attributes": {"signal": "盘中快速上涨", "evidence": "测试"},
-    }
+    assert (
+        radar._create_candidate(
+            store,
+            market="CN",
+            symbol="000001",
+            name="测试股",
+            price=10.0,
+            pct=2.0,
+            volume=None,
+            attributes={"signal": "盘中快速上涨", "evidence": "测试"},
+            now=now,
+        )
+        is True
+    )
 
-    assert radar._create_candidate(store, now=now, **create_kwargs) is False
-    assert radar._create_candidate(
-        store, now=now + timedelta(minutes=1), **create_kwargs
-    ) is True
+    assert radar._process_active_candidates(store, now + timedelta(minutes=3)) == (1, 0, 0)
+    assert radar._process_active_candidates(store, now + timedelta(minutes=4)) == (1, 1, 0)
+
+
+def test_radar_expiry_does_not_send_an_extra_message(monkeypatch, tmp_path):
+    store = _make_store(tmp_path, monkeypatch)
+    now = _a_share_time()
+    candidate = _create_candidate(store, now)
+    sent = []
+    monkeypatch.setattr(radar, "_send_tg_with_summary", lambda *args, **kwargs: sent.append(args) or True)
+
+    assert radar._close_expired_candidates(store, now + timedelta(minutes=10)) == 1
+    assert store.get_candidate(candidate["candidate_id"])["status"] == "closed"
+    assert sent == []
 
 
 def test_radar_mute_stops_tracking_and_suppresses_future_candidates(monkeypatch, tmp_path):

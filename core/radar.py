@@ -51,7 +51,7 @@ _format_update_message = radar_messages.format_update_message
 
 
 def _send_candidate(candidate: dict[str, Any], store: RadarStore, now: datetime) -> bool:
-    """Deliver a newly created candidate and persist its Telegram message id."""
+    """Deliver one confirmed candidate and persist its Telegram message id."""
     _set_run_summary(telegram_attempted=True)
     message_id = send_tg_interactive(
         _format_candidate_message(candidate),
@@ -84,7 +84,7 @@ def _create_candidate(
     attributes: dict[str, Any],
     now: datetime,
 ) -> bool:
-    """Apply mute/session limits before creating and delivering one candidate."""
+    """Create one silent candidate that must pass confirmation before delivery."""
     muted_until = store.suppressed_until(market, symbol, now)
     if muted_until is not None:
         log_info(
@@ -113,9 +113,6 @@ def _create_candidate(
         initial_track_minutes=settings.RADAR_INITIAL_TRACK_MINUTES,
     )
     if not created:
-        return False
-    if not _send_candidate(candidate, store, now):
-        store.close_candidate(str(candidate["candidate_id"]), "Telegram 初始推送失败", now)
         return False
     return True
 
@@ -221,14 +218,13 @@ def _process_active_candidates(store: RadarStore, now: datetime) -> tuple[int, i
         is_us_trading_session=_is_us_trading_session,
         fetch_candidate_quote=_fetch_candidate_quote,
         safe_float=_safe_float,
+        send_candidate=lambda candidate: _send_candidate(candidate, store, now),
         send_update=_send_tracking_update,
     )
 
 
 def _close_expired_candidates(store: RadarStore, now: datetime) -> int:
-    return radar_tracking.close_expired_candidates(
-        store, now, send_update=_send_tracking_update
-    )
+    return radar_tracking.close_expired_candidates(store, now)
 
 
 def _is_authorized_callback(callback: dict[str, Any]) -> bool:
