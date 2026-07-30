@@ -9,6 +9,10 @@ from typing import Any
 import requests
 
 from config import settings
+from core.analyzers.monitor import (
+    NEWS_TRACK_CALLBACK_PREFIX,
+    handle_news_tracking_callback,
+)
 from core.radar import handle_radar_callback
 from core.radar_store import RadarStore
 from utils.notifier import log_error, log_info
@@ -69,6 +73,14 @@ def _answer_callback(callback: dict[str, Any], notice: str) -> None:
     )
 
 
+def _handle_callback(callback: dict[str, Any], now: datetime) -> str:
+    """Route only known button namespaces to their dedicated handlers."""
+    data = str(callback.get("data") or "")
+    if data.startswith(f"{NEWS_TRACK_CALLBACK_PREFIX}:"):
+        return handle_news_tracking_callback(callback, now)
+    return handle_radar_callback(callback, now)
+
+
 def run_telegram_listener() -> None:
     """Run one dedicated process; Telegram long-polling needs no public web port."""
     if not settings.INTERACTION_BOT_TOKEN or not settings.INTERACTION_CHAT_ID:
@@ -89,7 +101,7 @@ def run_telegram_listener() -> None:
                 callback = update.get("callback_query")
                 if not isinstance(callback, dict):
                     continue
-                notice = handle_radar_callback(callback, datetime.now(settings.SHA_TZ))
+                notice = _handle_callback(callback, datetime.now(settings.SHA_TZ))
                 _answer_callback(callback, notice)
                 log_info(f"Telegram 雷达交互: {notice}")
             except Exception as exc:

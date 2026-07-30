@@ -12,6 +12,7 @@ from core.data_fetcher import (
     get_us_stock_quote,
     get_us_stock_snapshots,
 )
+from core.interaction_auth import is_authorized_interaction
 from core.radar_store import RadarStore
 from core.runtime import _record_fetch_success, _set_run_summary, _send_tg_with_summary
 from utils.notifier import log_error, log_info, send_tg_interactive
@@ -444,19 +445,7 @@ def _close_expired_candidates(store: RadarStore, now: datetime) -> int:
 
 
 def _is_authorized_callback(callback: dict[str, Any]) -> bool:
-    sender = callback.get("from") if isinstance(callback.get("from"), dict) else {}
-    user_id = sender.get("id")
-    try:
-        user_id = int(user_id)
-    except (TypeError, ValueError):
-        return False
-    if user_id in settings.INTERACTION_ALLOWED_USER_IDS:
-        return True
-
-    message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
-    chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
-    chat_id = str(chat.get("id") or "")
-    return chat.get("type") == "private" and chat_id == str(settings.INTERACTION_CHAT_ID) and chat_id == str(user_id)
+    return is_authorized_interaction(callback)
 
 
 def handle_radar_callback(callback: dict[str, Any], now: Optional[datetime] = None) -> str:

@@ -81,6 +81,7 @@
 | `SEC_WATCHLIST_TICKERS` | SEC 披露观察清单，美股代码逗号分隔 | 例如 `AAPL,NVDA,TSLA`；必须同时配置合规识别信息 |
 | `SEC_USER_AGENT` | SEC 请求识别信息 | 必须含真实可联系邮箱，例如 `stock-news-action your-email@example.com`；不配置则 SEC 明确跳过 |
 | `SEC_MAX_FILINGS_PER_TICKER` | 每只美股最多读取的近期披露数 | 默认 `3`；只读取 8-K、6-K、10-Q、10-K、20-F、40-F 等披露索引 |
+| `MARKET_ALERT_INTERACTION_ENABLED` | 为重要/紧急市场提醒显示事件跟踪按钮 | 设为 `1` 后显示“继续跟踪 2 小时／停止跟踪／查看原文”；群组还必须配置管理员用户 ID |
 | `WATCHLIST_CODES` | 要监控的 A 股代码，逗号分隔 | `monitor` 行情通道；例如 `600519,000001`。为空则只监控新闻 |
 | `MONITOR_MARKET_ALERT_DEDUP_MINUTES` | 重要/紧急市场提醒的跨来源去重窗口 | `monitor`；默认 `60` 分钟；相同或高度相似事件只投递一次，新数字或更高紧急级别仍会投递 |
 | `PRICE_ALERT_MINUTE_CHANGE_PCT` | 短时价格异动阈值（百分比） | `monitor` 行情通道；默认 `1.0` |
@@ -113,6 +114,7 @@ export SSE_ANNOUNCEMENTS_ENABLED="1"
 export GDELT_DISCOVERY_ENABLED="1"
 export SEC_WATCHLIST_TICKERS="AAPL,NVDA,TSLA"
 export SEC_USER_AGENT="stock-news-action your-email@example.com"
+export MARKET_ALERT_INTERACTION_ENABLED="1"
 export WATCHLIST_CODES="600519,000001"
 export PRICE_ALERT_MINUTE_CHANGE_PCT="1.0"
 export RADAR_A_SHARE_CODES="600519,000001"
@@ -270,6 +272,12 @@ python main.py daily
 - 中国证监会与上交所：只接收明确的监管、交易制度、停复牌、退市等高信号公告。官网列表通常只有日期，没有精确发布时间，因此它们会进入日报/盘中分析，但不会被伪装成刚发生的分钟级提醒。
 - SEC EDGAR：只跟踪你明确配置的美股代码。SEC 要求自动访问在请求头中声明可联系身份；未配置 `SEC_USER_AGENT` 或观察清单时，系统记录“跳过”而不会假装获取成功。
 - GDELT：用于全球事件发现。GDELT 返回的标题只会带“待核验线索”标记进入内部新闻流，不会直接推送到 Telegram；需要以原始报道或官方公告确认后，才应作为事实使用。
+
+### 事件跟踪按钮
+
+为重要、紧急市场提醒启用 `MARKET_ALERT_INTERACTION_ENABLED=1` 后，消息会附带“继续跟踪 2 小时”“停止跟踪”和“查看原文”。点击后，系统仍按一分钟周期检查已接入新闻源；仅在出现至少两个标题关键词重合的新来源时推送后续，并在两小时结束时给出一次结束提示。它不会自动搜索全网，也不会产生买卖指令。
+
+若提醒发在群组，必须把你自己的 Telegram 数字用户 ID 写入 `TG_INTERACTION_ALLOWED_USER_IDS`，例如 `TG_INTERACTION_ALLOWED_USER_IDS=123456789`；否则群成员不应能改变跟踪状态。私聊中则自动仅允许该私聊用户操作。
 
 ## 10. 风险提示与限制
 

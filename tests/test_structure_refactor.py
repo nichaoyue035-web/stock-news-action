@@ -764,6 +764,104 @@ def test_monitor_store_persists_news_and_alert_delivery(tmp_path):
     )
 
 
+def test_news_tracking_callback_starts_and_stops_for_authorized_user(
+    monkeypatch, tmp_path
+):
+    import core.analyzers.monitor as monitor
+
+    database = tmp_path / "monitor.db"
+    monkeypatch.setattr(settings, "MONITOR_DB_FILE", str(database))
+    monkeypatch.setattr(settings, "INTERACTION_ALLOWED_USER_IDS", [999])
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=settings.SHA_TZ)
+    item = {
+        "title": "NVIDIA export restriction escalates",
+        "digest": "official update",
+        "source": "official",
+        "link": "https://example.com/original",
+        "datetime": now,
+    }
+    store = MonitorStore(str(database))
+    store.initialize()
+    event_key = news_event_key(item)
+    tracking_id = store.offer_news_tracking(
+        event_key=event_key, item=item, telegram_chat_id="123", now=now
+    )
+    callback = {
+        "data": f"news:{tracking_id}:120",
+        "from": {"id": 999},
+        "message": {"chat": {"id": 123, "type": "supergroup"}},
+    }
+
+    assert "已开启 2 小时" in monitor.handle_news_tracking_callback(callback, now)
+    assert store.get_news_tracker(tracking_id)["status"] == "tracking"
+
+    callback["data"] = f"news:{tracking_id}:stop"
+    assert "已停止" in monitor.handle_news_tracking_callback(
+        callback, now + timedelta(minutes=1)
+    )
+    assert store.get_news_tracker(tracking_id)["status"] == "closed"
+
+
+def test_news_tracking_sends_only_new_related_source_items(monkeypatch, tmp_path):
+    import core.analyzers.monitor as monitor
+    import core.runtime as runtime
+
+    database = tmp_path / "monitor.db"
+    monkeypatch.setattr(settings, "MONITOR_DB_FILE", str(database))
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=settings.SHA_TZ)
+    original = {
+        "title": "NVIDIA export restriction escalates",
+        "digest": "official update",
+        "source": "official",
+        "link": "https://example.com/original",
+        "datetime": now,
+    }
+    related = {
+        "title": "NVIDIA restriction details confirmed",
+        "digest": "new source",
+        "source": "second source",
+        "link": "https://example.com/update",
+        "datetime": now + timedelta(minutes=1),
+    }
+    unrelated = {
+        "title": "Central bank policy update",
+        "digest": "unrelated",
+        "source": "third source",
+        "link": "https://example.com/other",
+        "datetime": now + timedelta(minutes=1),
+    }
+    store = MonitorStore(str(database))
+    store.initialize()
+    event_key = news_event_key(original)
+    store.record_news_event(original, now)
+    tracking_id = store.offer_news_tracking(
+        event_key=event_key, item=original, telegram_chat_id="123", now=now
+    )
+    assert store.activate_news_tracker(tracking_id, 120, now)
+    store.record_news_event(related, now + timedelta(minutes=1))
+    store.record_news_event(unrelated, now + timedelta(minutes=1))
+    sent_messages = []
+    monkeypatch.setattr(
+        runtime,
+        "_send_tg_with_summary",
+        lambda content, **kwargs: sent_messages.append(content) or True,
+    )
+
+    assert monitor._process_active_news_trackers(store, now + timedelta(minutes=1)) == (1, 0)
+    assert len(sent_messages) == 1
+    assert "NVIDIA restriction details confirmed" in sent_messages[0]
+    assert store.get_news_tracker(tracking_id)["update_count"] == 1
+
+
+def test_news_tracking_buttons_include_callback_controls_and_source_link():
+    import core.analyzers.monitor as monitor
+
+    markup = monitor._news_tracking_buttons("a" * 64, "https://example.com/source")
+    assert markup["inline_keyboard"][0][0]["callback_data"] == "news:" + "a" * 16 + ":120"
+    assert markup["inline_keyboard"][0][1]["callback_data"].endswith(":stop")
+    assert markup["inline_keyboard"][1][0]["url"] == "https://example.com/source"
+
+
 def test_monitor_store_retries_failures_and_applies_price_cooldown(tmp_path):
     store = MonitorStore(str(tmp_path / "monitor.db"))
     store.initialize()

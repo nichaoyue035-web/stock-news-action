@@ -213,6 +213,9 @@ INTERACTION_CHAT_ID = (
 INTERACTION_ALLOWED_USER_IDS = _parse_integer_list(
     os.getenv("TG_INTERACTION_ALLOWED_USER_IDS", "")
 )
+MARKET_ALERT_INTERACTION_ENABLED = _env_enabled(
+    "MARKET_ALERT_INTERACTION_ENABLED", False
+)
 
 DEFAULT_PROMPTS = {
     "daily": "你是A股投资总监。现在是{report_time}，请只基于以下新闻生成《今日盘前内参》：\n{news_txt}\n\n要求：\n1. 先核对时间：重点分析{report_date}盘前/最近24小时消息，不把旧闻当新催化。\n2. 语言精简但不要过度压缩：每个栏目1-2句，说清结论、原因和影响。\n3. 情绪判断必须结合上方具体新闻，不允许空泛说乐观/谨慎。\n4. 输出格式：\n【核心主线】...\n【利好/利空】利好...；利空...\n【情绪判断】结合新闻说明市场情绪强/中性/弱及原因。\n【今日关注】1-2个最值得盯的方向。",
