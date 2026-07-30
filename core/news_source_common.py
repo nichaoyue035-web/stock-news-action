@@ -50,6 +50,8 @@ def _parse_datetime(raw_value: Any) -> Optional[datetime.datetime]:
     ):
         try:
             dt = datetime.datetime.strptime(text, fmt)
+            if fmt.endswith("Z"):
+                dt = dt.replace(tzinfo=datetime.timezone.utc)
             return (
                 dt.replace(tzinfo=settings.SHA_TZ)
                 if dt.tzinfo is None

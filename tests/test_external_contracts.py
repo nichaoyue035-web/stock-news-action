@@ -71,6 +71,15 @@ def test_atom_rss_replay_keeps_namespaced_entry(monkeypatch):
     assert items[0]["source"] == "www.reuters.com"
 
 
+def test_compact_utc_timestamp_is_converted_to_shanghai_time():
+    from core.news_source_common import _parse_datetime
+
+    parsed = _parse_datetime("20260730T183044Z")
+
+    assert parsed is not None
+    assert parsed.isoformat() == "2026-07-31T02:30:44+08:00"
+
+
 def test_polygon_snapshot_replay_preserves_provider_neutral_quote(monkeypatch):
     import core.market_data as market_data
 
