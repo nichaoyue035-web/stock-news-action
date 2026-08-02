@@ -18,6 +18,35 @@ logging.basicConfig(
 logger = logging.getLogger("StockBot")
 
 SAFE_TELEGRAM_CHUNK_LENGTH = 3900
+STATUS_CALLBACK_DATA = "system:status"
+
+
+def status_button_markup() -> dict[str, Any]:
+    """Return the compact status control shared by every Telegram message."""
+    return {
+        "inline_keyboard": [
+            [{"text": "📊 状态", "callback_data": STATUS_CALLBACK_DATA}]
+        ]
+    }
+
+
+def with_status_button(reply_markup: dict[str, Any]) -> dict[str, Any]:
+    """Append the shared status control without changing existing message actions."""
+    markup = dict(reply_markup)
+    keyboard = markup.get("inline_keyboard")
+    if not isinstance(keyboard, list):
+        return status_button_markup()
+    rows = [list(row) for row in keyboard if isinstance(row, list)]
+    has_status_button = any(
+        isinstance(button, dict)
+        and button.get("callback_data") == STATUS_CALLBACK_DATA
+        for row in rows
+        for button in row
+    )
+    if not has_status_button:
+        rows.append(status_button_markup()["inline_keyboard"][0])
+    markup["inline_keyboard"] = rows
+    return markup
 
 
 def log_info(message):
@@ -114,6 +143,7 @@ def send_tg(content, token=None, chat_id=None) -> bool:
             "chat_id": use_chat_id,
             "text": chunk,
             "disable_web_page_preview": True,
+            "reply_markup": status_button_markup(),
         }
         try:
             resp = requests.post(url, json=payload, timeout=10)
@@ -172,7 +202,7 @@ def send_tg_interactive(
                 "chat_id": use_chat_id,
                 "text": safe_content,
                 "disable_web_page_preview": True,
-                "reply_markup": reply_markup,
+                "reply_markup": with_status_button(reply_markup),
             },
             timeout=10,
         )

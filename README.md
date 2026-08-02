@@ -61,7 +61,7 @@
 | `daily_health` | VPS 每日健康提醒 | 向监控 Telegram 频道推送最近一次任务状态；失败、异常或状态过期会明确标红 |
 | `maintenance` | 状态库维护 | 清理过期新闻、报价、候选和告警，并生成一个本地 SQLite 一致性备份 |
 | `telegram_listener` | 雷达交互监听服务 | 常驻接收雷达消息按钮，用于延长或停止已自动开始的追踪 |
-| `status_panel` | 监控状态面板 | 向监控 Telegram 频道发送可置顶的“刷新监控状态”按钮 |
+| `status_panel` | 监控状态面板 | 向监控 Telegram 频道发送可置顶的“📊 状态”按钮 |
 | `yfinance_dev` | Yahoo Finance 两层开发探针 | 第一层查询行情候选，第二层补充近期可追溯事件证据；仅输出本地测试报告，不发送 Telegram、不创建候选、不应部署到 VPS |
 
 > 说明：`SUPPORTED_ANALYSIS_MODES` 与 `REQUIRED_ENV_BY_MODE` 在 `main.py` 中分别维护。README 仅说明当前代码支持的分发模式，不代表每个模式都适合高频运行或能覆盖所有投资场景。
@@ -424,7 +424,8 @@ Telegram；故障仍会保留在 systemd journal、独立健康心跳和每日�
 ### 监控状态按钮
 
 保持 `stock-news-interaction.service` 运行后，执行一次以下命令，会在监控 Telegram 频道
-发送带“刷新监控状态”按钮的消息；将该消息置顶即可作为一键入口：
+发送带“📊 状态”按钮的消息；将该消息置顶即可作为一键入口。每条程序推送也会附带同一个紧凑按钮，
+而雷达、事件追踪等原有按钮会保留：
 
 ```bash
 sudo -u stockbot /opt/stock-news-action/.venv/bin/python /opt/stock-news-action/main.py status_panel

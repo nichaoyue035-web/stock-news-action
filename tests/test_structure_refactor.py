@@ -1795,6 +1795,64 @@ def test_send_tg_raises_in_ci_when_credentials_missing(monkeypatch):
         notifier.send_tg("hello", token="", chat_id="")
 
 
+def test_send_tg_adds_a_compact_status_button(monkeypatch):
+    import utils.notifier as notifier
+
+    class Response:
+        status_code = 200
+        text = ""
+
+    sent_payloads = []
+    monkeypatch.setattr(
+        notifier.requests,
+        "post",
+        lambda _url, **kwargs: sent_payloads.append(kwargs["json"]) or Response(),
+    )
+
+    assert notifier.send_tg("hello", token="token", chat_id="chat") is True
+    assert sent_payloads[0]["reply_markup"] == {
+        "inline_keyboard": [
+            [{"text": "📊 状态", "callback_data": "system:status"}]
+        ]
+    }
+
+
+def test_interactive_message_keeps_its_actions_and_adds_status_button(monkeypatch):
+    import utils.notifier as notifier
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {"result": {"message_id": 123}}
+
+    sent_payloads = []
+    monkeypatch.setattr(
+        notifier.requests,
+        "post",
+        lambda _url, **kwargs: sent_payloads.append(kwargs["json"]) or Response(),
+    )
+    original_markup = {
+        "inline_keyboard": [[{"text": "继续跟踪", "callback_data": "radar:x:120"}]]
+    }
+
+    assert (
+        notifier.send_tg_interactive(
+            "hello", reply_markup=original_markup, token="token", chat_id="chat"
+        )
+        == 123
+    )
+    assert sent_payloads[0]["reply_markup"]["inline_keyboard"] == [
+        [{"text": "继续跟踪", "callback_data": "radar:x:120"}],
+        [{"text": "📊 状态", "callback_data": "system:status"}],
+    ]
+    assert original_markup["inline_keyboard"] == [
+        [{"text": "继续跟踪", "callback_data": "radar:x:120"}]
+    ]
+
+
 def test_append_history_reports_write_failure(monkeypatch, tmp_path):
     from config import settings
     from core.history import _append_history

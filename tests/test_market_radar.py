@@ -391,7 +391,7 @@ def test_status_panel_sends_a_refresh_button(monkeypatch, tmp_path):
     assert calls[0][0] == "sendMessage"
     assert calls[0][1]["chat_id"] == "monitor-chat"
     assert calls[0][1]["reply_markup"]["inline_keyboard"][0][0] == {
-        "text": "刷新监控状态",
+        "text": "📊 状态",
         "callback_data": "system:status",
     }
     assert "🟢 monitor：正常" in calls[0][1]["text"]
@@ -442,6 +442,51 @@ def test_status_button_refreshes_a_current_authorized_status(monkeypatch, tmp_pa
     assert calls[0][1]["message_id"] == 456
     assert "🟡 monitor：部分完成" in calls[0][1]["text"]
     assert "海外 RSS 部分失败" in calls[0][1]["text"]
+
+
+def test_status_button_refreshes_a_primary_bot_message(monkeypatch, tmp_path):
+    from core import telegram_interaction
+    from core.runtime import get_run_status_file
+
+    now = datetime.now(settings.SHA_TZ)
+    monkeypatch.setattr(settings, "RUN_STATUS_DIR", str(tmp_path / "runtime_status"))
+    monkeypatch.setattr(settings, "HEALTH_REQUIRED_MODES", ("monitor",))
+    (tmp_path / "runtime_status").mkdir()
+    with open(get_run_status_file("monitor"), "w", encoding="utf-8") as file:
+        json.dump(
+            {
+                "mode": "monitor",
+                "status": "success",
+                "finished_at": now.isoformat(),
+            },
+            file,
+        )
+    monkeypatch.setattr(settings, "RADAR_INTERACTION_CHAT_ID", "primary-chat")
+    monkeypatch.setattr(settings, "MARKET_INTERACTION_CHAT_ID", "monitor-chat")
+    monkeypatch.setattr(settings, "INTERACTION_ALLOWED_USER_IDS", [999])
+    calls = []
+    monkeypatch.setattr(
+        telegram_interaction,
+        "_telegram_post",
+        lambda method, payload, **kwargs: calls.append((method, payload, kwargs)) or {},
+    )
+
+    notice = telegram_interaction._handle_callback(
+        {
+            "data": "system:status",
+            "from": {"id": 999},
+            "message": {
+                "message_id": 789,
+                "chat": {"id": "primary-chat", "type": "supergroup"},
+            },
+        },
+        now,
+        token="primary-token",
+    )
+
+    assert notice == "监控状态已刷新。"
+    assert calls[0][1]["chat_id"] == "primary-chat"
+    assert calls[0][2]["token"] == "primary-token"
 
 
 def test_active_candidate_stops_after_price_invalidation(monkeypatch, tmp_path):

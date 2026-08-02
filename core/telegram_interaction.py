@@ -20,24 +20,20 @@ from core.radar import handle_radar_callback
 from core.radar_store import RadarStore
 from core.runtime import get_run_status_file
 from utils.safety import redact_sensitive_text
-from utils.notifier import log_error, log_info
+from utils.notifier import (
+    STATUS_CALLBACK_DATA,
+    log_error,
+    log_info,
+    status_button_markup,
+)
 
 
 TELEGRAM_API_ROOT = "https://api.telegram.org/bot{token}/{method}"
-STATUS_CALLBACK_DATA = "system:status"
 
 
 def _status_button_markup() -> dict[str, Any]:
-    return {
-        "inline_keyboard": [
-            [
-                {
-                    "text": "刷新监控状态",
-                    "callback_data": STATUS_CALLBACK_DATA,
-                }
-            ]
-        ]
-    }
+    """Keep the status panel and normal Telegram messages visually consistent."""
+    return status_button_markup()
 
 
 def _health_max_age_seconds() -> int:
@@ -117,22 +113,33 @@ def _telegram_post(
 
 
 def _is_status_callback(callback: dict[str, Any]) -> bool:
-    """Allow status refreshes only in the configured monitoring chat."""
+    """Allow status refreshes only in a configured bot chat."""
     from core.interaction_auth import is_authorized_interaction
 
     message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
     chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
-    if str(chat.get("id") or "") != str(settings.MARKET_INTERACTION_CHAT_ID or ""):
+    chat_id = str(chat.get("id") or "")
+    configured_chat_ids = {
+        str(chat_id)
+        for chat_id in (
+            settings.RADAR_INTERACTION_CHAT_ID,
+            settings.MARKET_INTERACTION_CHAT_ID,
+        )
+        if chat_id
+    }
+    if chat_id not in configured_chat_ids:
         return False
-    return is_authorized_interaction(
-        callback, private_chat_id=settings.MARKET_INTERACTION_CHAT_ID
-    )
+    return is_authorized_interaction(callback, private_chat_id=chat_id)
 
 
-def _handle_status_callback(callback: dict[str, Any], now: datetime) -> str:
+def _handle_status_callback(
+    callback: dict[str, Any], now: datetime, *, token: str | None = None
+) -> str:
     if not _is_status_callback(callback):
         return "此按钮仅允许配置的管理员在监控频道使用。"
     message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
+    chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+    chat_id = str(chat.get("id") or "")
     message_id = message.get("message_id")
     if message_id is None:
         log_error("❌ 监控状态按钮缺少 Telegram message_id")
@@ -140,13 +147,13 @@ def _handle_status_callback(callback: dict[str, Any], now: datetime) -> str:
     if _telegram_post(
         "editMessageText",
         {
-            "chat_id": settings.MARKET_INTERACTION_CHAT_ID,
+            "chat_id": chat_id,
             "message_id": message_id,
             "text": _format_status_message(now),
             "disable_web_page_preview": True,
             "reply_markup": _status_button_markup(),
         },
-        token=settings.MARKET_INTERACTION_BOT_TOKEN,
+        token=token or settings.MARKET_INTERACTION_BOT_TOKEN,
     ) is None:
         return "状态发送失败，请查看服务日志。"
     return "监控状态已刷新。"
@@ -198,11 +205,13 @@ def _answer_callback(callback: dict[str, Any], notice: str, *, token: str) -> No
     )
 
 
-def _handle_callback(callback: dict[str, Any], now: datetime) -> str:
+def _handle_callback(
+    callback: dict[str, Any], now: datetime, *, token: str | None = None
+) -> str:
     """Route only known button namespaces to their dedicated handlers."""
     data = str(callback.get("data") or "")
     if data == STATUS_CALLBACK_DATA:
-        return _handle_status_callback(callback, now)
+        return _handle_status_callback(callback, now, token=token)
     if data.startswith(f"{NEWS_TRACK_CALLBACK_PREFIX}:"):
         return handle_news_tracking_callback(callback, now)
     return handle_radar_callback(callback, now)
@@ -280,7 +289,9 @@ def run_telegram_listener() -> None:
                     callback = update.get("callback_query")
                     if not isinstance(callback, dict):
                         continue
-                    notice = _handle_callback(callback, datetime.now(settings.SHA_TZ))
+                    notice = _handle_callback(
+                        callback, datetime.now(settings.SHA_TZ), token=token
+                    )
                     _answer_callback(callback, notice, token=token)
                     log_info(f"Telegram 交互: {notice}")
                 except Exception as exc:
