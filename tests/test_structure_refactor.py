@@ -59,6 +59,15 @@ def test_daily_health_uses_monitor_credentials(monkeypatch):
     main._validate_required_env("daily_health")
 
 
+def test_telegram_listener_accepts_a_monitor_bot_without_a_primary_bot(monkeypatch):
+    monkeypatch.delenv("TG_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TG_CHAT_ID", raising=False)
+    monkeypatch.setenv("TG_BOT_TOKEN_MONITOR", "token")
+    monkeypatch.setenv("TG_CHAT_ID_MONITOR", "chat")
+
+    main._validate_required_env("telegram_listener")
+
+
 def test_radar_uses_primary_bot_credentials(monkeypatch):
     monkeypatch.delenv("TG_BOT_TOKEN_MONITOR", raising=False)
     monkeypatch.delenv("TG_CHAT_ID_MONITOR", raising=False)
@@ -297,6 +306,7 @@ def test_failure_alert_uses_the_other_configured_telegram_channel(monkeypatch):
     monkeypatch.setattr(settings, "TG_CHAT_ID", "primary-chat")
     monkeypatch.setattr(settings, "TG_BOT_TOKEN_MONITOR", "monitor-token")
     monkeypatch.setattr(settings, "TG_CHAT_ID_MONITOR", "monitor-chat")
+    monkeypatch.setattr(settings, "TELEGRAM_FAILURE_ALERTS_ENABLED", True)
     monkeypatch.setattr(
         failure_notifier,
         "send_tg",
@@ -307,6 +317,22 @@ def test_failure_alert_uses_the_other_configured_telegram_channel(monkeypatch):
 
     assert sent[0][1] == {"token": "primary-token", "chat_id": "primary-chat"}
     assert "stock-news@monitor.service" in sent[0][0]
+
+
+def test_failure_alert_is_silent_by_default(monkeypatch):
+    import core.failure_notifier as failure_notifier
+
+    sent = []
+    monkeypatch.setattr(settings, "TELEGRAM_FAILURE_ALERTS_ENABLED", False)
+    monkeypatch.setattr(
+        failure_notifier,
+        "send_tg",
+        lambda content, **kwargs: sent.append((content, kwargs)) or True,
+    )
+
+    failure_notifier.send_failure_alert("stock-news@monitor.service")
+
+    assert sent == []
 
 
 def test_data_fetcher_retries_transient_get_failure(monkeypatch):

@@ -61,6 +61,7 @@
 | `daily_health` | VPS 每日健康提醒 | 向监控 Telegram 频道推送最近一次任务状态；失败、异常或状态过期会明确标红 |
 | `maintenance` | 状态库维护 | 清理过期新闻、报价、候选和告警，并生成一个本地 SQLite 一致性备份 |
 | `telegram_listener` | 雷达交互监听服务 | 常驻接收雷达消息按钮，用于延长或停止已自动开始的追踪 |
+| `status_panel` | 监控状态面板 | 向监控 Telegram 频道发送可置顶的“刷新监控状态”按钮 |
 | `yfinance_dev` | Yahoo Finance 两层开发探针 | 第一层查询行情候选，第二层补充近期可追溯事件证据；仅输出本地测试报告，不发送 Telegram、不创建候选、不应部署到 VPS |
 
 > 说明：`SUPPORTED_ANALYSIS_MODES` 与 `REQUIRED_ENV_BY_MODE` 在 `main.py` 中分别维护。README 仅说明当前代码支持的分发模式，不代表每个模式都适合高频运行或能覆盖所有投资场景。
@@ -94,6 +95,7 @@
 | `STATE_BACKUP_DIR` | SQLite 本地备份目录 | 默认 `STATE_DIR/backups`；每天维护任务生成一个一致性 `.sqlite3` 备份，仍建议将该目录异地复制 |
 | `RUN_STATUS_DIR` | 分模式健康状态目录 | 每个模式独立保存心跳，避免某个无关任务覆盖另一个模式的失败状态 |
 | `HEALTH_REQUIRED_MODES` | 每日健康提醒必须检查的模式 | 默认 `daily,monitor`；逗号分隔，例如 `daily,monitor,radar` |
+| `TELEGRAM_FAILURE_ALERTS_ENABLED` | 每次 systemd 失败时立即推送 Telegram | 默认 `false`；失败仍保留在日志、健康心跳和状态面板中 |
 | `CN_MARKET_HOLIDAYS` / `US_MARKET_HOLIDAYS` | 中美交易所例外休市日 | `YYYY-MM-DD` 逗号分隔；周末自动跳过，列出的日期不会被误判为数据失败 |
 | `DB_RETENTION_DAYS` | 监控 SQLite 历史保留天数 | 默认 `30`；只清理过期新闻、报价、已结束候选和告警，活跃追踪不受影响 |
 | `DB_BACKUP_RETENTION_DAYS` | 本地 SQLite 备份保留天数 | 默认 `14`；只删除维护任务生成的旧备份 |
@@ -248,7 +250,7 @@ python main.py telegram_listener
 ```
 
 `telegram_listener` 使用 Telegram 长轮询，不需要向公网开放 Webhook 端口。它会监听主机器人
-的雷达按钮；启用紧急市场事件跟踪时，也会监听监控机器人的事件按钮。每个 Bot 只能有一个
+的雷达按钮和监控机器人的状态按钮；启用紧急市场事件跟踪时，也会监听监控机器人的事件按钮。每个 Bot 只能有一个
 监听进程；如果该 Bot 已设置 Webhook，需要先清理 Webhook 或改用该 Webhook 接收按钮回调。
 
 ### Yahoo Finance 开发测试
@@ -414,9 +416,22 @@ python main.py metrics monitor
 资金雷达会使用现有的 `TG_BOT_TOKEN` 和 `TG_CHAT_ID`。
 
 所有 `stock-news@*.service` 及交互监听服务失败时，systemd 会触发
-`stock-news-failure@.service`。该服务优先尝试通过与故障模式不同的已配置 Telegram
-频道通知；若两个频道都不可用，失败仍会保留在 systemd journal 中。生产环境仍建议把
+`stock-news-failure@.service`。为避免部分完成或短暂服务失败反复打扰，默认不会立即发送
+Telegram；故障仍会保留在 systemd journal、独立健康心跳和每日健康提醒中。若确实需要每次
+立即通知，可在服务器环境文件中设置 `TELEGRAM_FAILURE_ALERTS_ENABLED=true`。生产环境仍建议把
 `STATE_BACKUP_DIR` 异地同步，并接入独立于 Telegram 的主机监控。
+
+### 监控状态按钮
+
+保持 `stock-news-interaction.service` 运行后，执行一次以下命令，会在监控 Telegram 频道
+发送带“刷新监控状态”按钮的消息；将该消息置顶即可作为一键入口：
+
+```bash
+sudo -u stockbot /opt/stock-news-action/.venv/bin/python /opt/stock-news-action/main.py status_panel
+```
+
+点击按钮会读取 `HEALTH_REQUIRED_MODES` 中每个模式最近一次运行的独立心跳，显示正常、部分
+完成、失败或状态过期。群聊中只有 `TG_INTERACTION_ALLOWED_USER_IDS` 允许的账号能刷新。
 
 市场监控的“紧急市场提醒”使用紧凑格式：先给事件与关键事实，再只指出一个最关键的
 市场含义和一个应核对的变量。三小时市场总结按政策、宏观、资金、行业、公司或海外类别

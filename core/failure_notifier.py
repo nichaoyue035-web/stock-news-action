@@ -23,8 +23,14 @@ def _notification_targets(failed_unit: str) -> list[tuple[str, str, str]]:
 
 
 def send_failure_alert(failed_unit: str) -> None:
-    """Attempt failure delivery through an alternate configured Telegram channel."""
+    """Optionally deliver a systemd failure through an alternate Telegram channel."""
     clean_unit = " ".join(str(failed_unit or "未知服务").split())[:180]
+    if not settings.TELEGRAM_FAILURE_ALERTS_ENABLED:
+        log_info(
+            f"服务失败即时通知已静默: {clean_unit}；"
+            "故障仍保留在 systemd 日志和监控状态面板中"
+        )
+        return
     message = (
         "🔴 服务执行失败\n"
         f"单元：{clean_unit}\n"

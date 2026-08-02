@@ -41,7 +41,7 @@ REQUIRED_ENV_BY_MODE: Final[dict[str, tuple[str, ...]]] = {
     "us_periodic": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN", "TG_CHAT_ID"),
     "daily_health": ("TG_BOT_TOKEN_MONITOR", "TG_CHAT_ID_MONITOR"),
     "radar": ("TG_BOT_TOKEN", "TG_CHAT_ID"),
-    "telegram_listener": ("TG_BOT_TOKEN", "TG_CHAT_ID"),
+    "status_panel": ("TG_BOT_TOKEN_MONITOR", "TG_CHAT_ID_MONITOR"),
 }
 
 
@@ -53,6 +53,14 @@ def _fatal(message: str) -> NoReturn:
 
 def _validate_required_env(mode: str) -> None:
     """Fail fast when required environment variables are missing for a run mode."""
+    if mode == "telegram_listener":
+        configured_bot_pairs = (
+            (os.getenv("TG_BOT_TOKEN"), os.getenv("TG_CHAT_ID")),
+            (os.getenv("TG_BOT_TOKEN_MONITOR"), os.getenv("TG_CHAT_ID_MONITOR")),
+        )
+        if any(token and chat_id for token, chat_id in configured_bot_pairs):
+            return
+        _fatal("❌ Telegram 交互监听缺少已完整配置的机器人和聊天 ID")
     required_names = REQUIRED_ENV_BY_MODE.get(mode)
     if not required_names:
         return
@@ -212,6 +220,12 @@ def main() -> None:
         from core.telegram_interaction import run_telegram_listener
 
         run_telegram_listener()
+        return
+    if mode == "status_panel":
+        from core.telegram_interaction import send_status_panel
+
+        if not send_status_panel():
+            _fatal("❌ 监控状态面板发送失败")
         return
     if mode == "maintenance":
         from core.maintenance import run_maintenance

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 
 from config import settings
@@ -343,19 +344,104 @@ def test_listener_replies_to_private_id_request_without_authorizing_user(monkeyp
     ]
 
 
-def test_listener_targets_primary_radar_and_monitor_event_bots(monkeypatch):
+def test_listener_targets_primary_radar_and_monitor_status_bots(monkeypatch):
     from core import telegram_interaction
 
     monkeypatch.setattr(settings, "RADAR_INTERACTION_BOT_TOKEN", "primary-token")
     monkeypatch.setattr(settings, "RADAR_INTERACTION_CHAT_ID", "primary-chat")
     monkeypatch.setattr(settings, "MARKET_INTERACTION_BOT_TOKEN", "monitor-token")
     monkeypatch.setattr(settings, "MARKET_INTERACTION_CHAT_ID", "monitor-chat")
-    monkeypatch.setattr(settings, "MARKET_ALERT_INTERACTION_ENABLED", True)
+    monkeypatch.setattr(settings, "MARKET_ALERT_INTERACTION_ENABLED", False)
 
     assert telegram_interaction._listener_targets() == [
         ("radar_last_update_id", "primary-token"),
         ("market_last_update_id", "monitor-token"),
     ]
+
+
+def test_status_panel_sends_a_refresh_button(monkeypatch, tmp_path):
+    from core import telegram_interaction
+    from core.runtime import get_run_status_file
+
+    now = datetime.now(settings.SHA_TZ)
+    monkeypatch.setattr(settings, "RUN_STATUS_DIR", str(tmp_path / "runtime_status"))
+    monkeypatch.setattr(settings, "HEALTH_REQUIRED_MODES", ("monitor",))
+    status_path = get_run_status_file("monitor")
+    (tmp_path / "runtime_status").mkdir()
+    with open(status_path, "w", encoding="utf-8") as file:
+        json.dump(
+            {
+                "mode": "monitor",
+                "status": "success",
+                "finished_at": now.isoformat(),
+                "reason": "",
+            },
+            file,
+        )
+    monkeypatch.setattr(settings, "MARKET_INTERACTION_BOT_TOKEN", "monitor-token")
+    monkeypatch.setattr(settings, "MARKET_INTERACTION_CHAT_ID", "monitor-chat")
+    calls = []
+    monkeypatch.setattr(
+        telegram_interaction,
+        "_telegram_post",
+        lambda method, payload, **kwargs: calls.append((method, payload, kwargs)) or {},
+    )
+
+    assert telegram_interaction.send_status_panel() is True
+    assert calls[0][0] == "sendMessage"
+    assert calls[0][1]["chat_id"] == "monitor-chat"
+    assert calls[0][1]["reply_markup"]["inline_keyboard"][0][0] == {
+        "text": "刷新监控状态",
+        "callback_data": "system:status",
+    }
+    assert "🟢 monitor：正常" in calls[0][1]["text"]
+
+
+def test_status_button_refreshes_a_current_authorized_status(monkeypatch, tmp_path):
+    from core import telegram_interaction
+    from core.runtime import get_run_status_file
+
+    now = datetime.now(settings.SHA_TZ)
+    monkeypatch.setattr(settings, "RUN_STATUS_DIR", str(tmp_path / "runtime_status"))
+    monkeypatch.setattr(settings, "HEALTH_REQUIRED_MODES", ("monitor",))
+    (tmp_path / "runtime_status").mkdir()
+    with open(get_run_status_file("monitor"), "w", encoding="utf-8") as file:
+        json.dump(
+            {
+                "mode": "monitor",
+                "status": "partial",
+                "finished_at": now.isoformat(),
+                "reason": "海外 RSS 部分失败",
+            },
+            file,
+        )
+    monkeypatch.setattr(settings, "MARKET_INTERACTION_BOT_TOKEN", "monitor-token")
+    monkeypatch.setattr(settings, "MARKET_INTERACTION_CHAT_ID", "monitor-chat")
+    monkeypatch.setattr(settings, "INTERACTION_ALLOWED_USER_IDS", [999])
+    calls = []
+    monkeypatch.setattr(
+        telegram_interaction,
+        "_telegram_post",
+        lambda method, payload, **kwargs: calls.append((method, payload, kwargs)) or {},
+    )
+
+    notice = telegram_interaction._handle_callback(
+        {
+            "data": "system:status",
+            "from": {"id": 999},
+            "message": {
+                "message_id": 456,
+                "chat": {"id": "monitor-chat", "type": "supergroup"},
+            },
+        },
+        now,
+    )
+
+    assert notice == "监控状态已刷新。"
+    assert calls[0][0] == "editMessageText"
+    assert calls[0][1]["message_id"] == 456
+    assert "🟡 monitor：部分完成" in calls[0][1]["text"]
+    assert "海外 RSS 部分失败" in calls[0][1]["text"]
 
 
 def test_active_candidate_stops_after_price_invalidation(monkeypatch, tmp_path):

@@ -131,6 +131,11 @@ DB_BACKUP_RETENTION_DAYS = _env_positive_int("DB_BACKUP_RETENTION_DAYS", 14)
 HTTP_GET_MAX_ATTEMPTS = _env_positive_int("HTTP_GET_MAX_ATTEMPTS", 2)
 HTTP_GET_RETRY_BASE_SECONDS = _env_positive_float("HTTP_GET_RETRY_BASE_SECONDS", 0.5)
 METRICS_RECENT_RUNS = _env_positive_int("METRICS_RECENT_RUNS", 100)
+# Keep systemd failures visible in logs and health heartbeats without
+# interrupting Telegram for every transient or partial run by default.
+TELEGRAM_FAILURE_ALERTS_ENABLED = _env_enabled(
+    "TELEGRAM_FAILURE_ALERTS_ENABLED", False
+)
 OFFSITE_BACKUP_ENABLED = _env_enabled("OFFSITE_BACKUP_ENABLED")
 OFFSITE_BACKUP_RCLONE_TARGET = os.getenv("OFFSITE_BACKUP_RCLONE_TARGET", "").strip()
 OFFSITE_BACKUP_TIMEOUT_SECONDS = _env_positive_int(

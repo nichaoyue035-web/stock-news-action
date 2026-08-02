@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import os
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -15,10 +18,77 @@ from core.analyzers.monitor import (
 )
 from core.radar import handle_radar_callback
 from core.radar_store import RadarStore
+from core.runtime import get_run_status_file
+from utils.safety import redact_sensitive_text
 from utils.notifier import log_error, log_info
 
 
 TELEGRAM_API_ROOT = "https://api.telegram.org/bot{token}/{method}"
+STATUS_CALLBACK_DATA = "system:status"
+
+
+def _status_button_markup() -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "刷新监控状态",
+                    "callback_data": STATUS_CALLBACK_DATA,
+                }
+            ]
+        ]
+    }
+
+
+def _health_max_age_seconds() -> int:
+    try:
+        minutes = int(os.getenv("HEALTH_MAX_AGE_MINUTES", "30"))
+    except ValueError:
+        minutes = 30
+    return max(1, minutes) * 60
+
+
+def _format_status_message(now: datetime | None = None) -> str:
+    """Format secret-free per-mode heartbeats for the monitoring chat."""
+    now = now or datetime.now(settings.SHA_TZ)
+    modes = settings.HEALTH_REQUIRED_MODES or ("daily", "monitor")
+    lines = [f"📊 监控状态 · {now.strftime('%Y-%m-%d %H:%M')}"]
+    all_healthy = True
+
+    for mode in modes:
+        try:
+            status_path = Path(get_run_status_file(mode))
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            if not isinstance(status, dict):
+                raise ValueError("运行状态不是对象")
+            finished_at = datetime.fromisoformat(str(status["finished_at"]))
+            if finished_at.tzinfo is None:
+                finished_at = finished_at.replace(tzinfo=settings.SHA_TZ)
+            age_seconds = max(0, (now - finished_at).total_seconds())
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+            lines.append(f"🔴 {mode}：无法读取状态（{exc.__class__.__name__}）")
+            all_healthy = False
+            continue
+
+        status_value = str(status.get("status") or "未知")
+        if age_seconds > _health_max_age_seconds():
+            icon, label = "🟠", "状态过期"
+            all_healthy = False
+        elif status_value == "success":
+            icon, label = "🟢", "正常"
+        elif status_value == "partial":
+            icon, label = "🟡", "部分完成"
+            all_healthy = False
+        else:
+            icon, label = "🔴", "执行异常"
+            all_healthy = False
+        lines.append(f"{icon} {mode}：{label} · {age_seconds / 60:.0f} 分钟前")
+        if status.get("reason"):
+            lines.append(f"  原因：{redact_sensitive_text(status['reason'])}")
+
+    lines.insert(1, "整体：🟢 正常" if all_healthy else "整体：🔴 需要检查")
+    lines.append("说明：即时失败提醒默认静默；详情仍保留在服务日志和此状态面板。")
+    return "\n".join(lines)
 
 
 def _telegram_post(
@@ -44,6 +114,60 @@ def _telegram_post(
         return None
     result = body.get("result")
     return result if isinstance(result, dict) else {"items": result}
+
+
+def _is_status_callback(callback: dict[str, Any]) -> bool:
+    """Allow status refreshes only in the configured monitoring chat."""
+    from core.interaction_auth import is_authorized_interaction
+
+    message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
+    chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+    if str(chat.get("id") or "") != str(settings.MARKET_INTERACTION_CHAT_ID or ""):
+        return False
+    return is_authorized_interaction(
+        callback, private_chat_id=settings.MARKET_INTERACTION_CHAT_ID
+    )
+
+
+def _handle_status_callback(callback: dict[str, Any], now: datetime) -> str:
+    if not _is_status_callback(callback):
+        return "此按钮仅允许配置的管理员在监控频道使用。"
+    message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
+    message_id = message.get("message_id")
+    if message_id is None:
+        log_error("❌ 监控状态按钮缺少 Telegram message_id")
+        return "状态面板已失效，请重新创建。"
+    if _telegram_post(
+        "editMessageText",
+        {
+            "chat_id": settings.MARKET_INTERACTION_CHAT_ID,
+            "message_id": message_id,
+            "text": _format_status_message(now),
+            "disable_web_page_preview": True,
+            "reply_markup": _status_button_markup(),
+        },
+        token=settings.MARKET_INTERACTION_BOT_TOKEN,
+    ) is None:
+        return "状态发送失败，请查看服务日志。"
+    return "监控状态已刷新。"
+
+
+def send_status_panel() -> bool:
+    """Post a pin-ready status panel to the monitoring chat once."""
+    result = _telegram_post(
+        "sendMessage",
+        {
+            "chat_id": settings.MARKET_INTERACTION_CHAT_ID,
+            "text": _format_status_message(),
+            "disable_web_page_preview": True,
+            "reply_markup": _status_button_markup(),
+        },
+        token=settings.MARKET_INTERACTION_BOT_TOKEN,
+    )
+    if result is None:
+        return False
+    log_info("监控状态面板已发送；可在 Telegram 中置顶后随时点击刷新")
+    return True
 
 
 def _get_updates(offset: int | None, *, token: str) -> list[dict[str, Any]] | None:
@@ -77,6 +201,8 @@ def _answer_callback(callback: dict[str, Any], notice: str, *, token: str) -> No
 def _handle_callback(callback: dict[str, Any], now: datetime) -> str:
     """Route only known button namespaces to their dedicated handlers."""
     data = str(callback.get("data") or "")
+    if data == STATUS_CALLBACK_DATA:
+        return _handle_status_callback(callback, now)
     if data.startswith(f"{NEWS_TRACK_CALLBACK_PREFIX}:"):
         return handle_news_tracking_callback(callback, now)
     return handle_radar_callback(callback, now)
@@ -115,8 +241,7 @@ def _listener_targets() -> list[tuple[str, str]]:
     if settings.RADAR_INTERACTION_BOT_TOKEN and settings.RADAR_INTERACTION_CHAT_ID:
         targets.append(("radar_last_update_id", settings.RADAR_INTERACTION_BOT_TOKEN))
     if (
-        settings.MARKET_ALERT_INTERACTION_ENABLED
-        and settings.MARKET_INTERACTION_BOT_TOKEN
+        settings.MARKET_INTERACTION_BOT_TOKEN
         and settings.MARKET_INTERACTION_CHAT_ID
         and all(token != settings.MARKET_INTERACTION_BOT_TOKEN for _, token in targets)
     ):
