@@ -135,6 +135,7 @@ _normalise_polygon_snapshot = market_data._normalise_polygon_snapshot
 _normalize_eastmoney_decimal = market_data._normalize_eastmoney_decimal
 get_hot_stocks_data = market_data.get_hot_stocks_data
 get_market_funds = market_data.get_market_funds
+get_stock_history_bars = market_data.get_stock_history_bars
 get_stock_history_closes = market_data.get_stock_history_closes
 get_stock_quote = market_data.get_stock_quote
 get_us_stock_news = market_data.get_us_stock_news

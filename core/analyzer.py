@@ -121,6 +121,13 @@ def run_recommend() -> None:
     _run_recommend()
 
 
+@_with_run_summary("swing")
+def run_swing() -> None:
+    from core.analyzers.swing import run_swing as _run_swing
+
+    _run_swing()
+
+
 @_with_run_summary("track")
 def run_track() -> None:
     from core.analyzers.track import run_track as _run_track
@@ -183,3 +190,10 @@ def run_review() -> None:
     from core.analyzers.review import run_review as _run_review
 
     _run_review()
+
+
+@_with_run_summary("swing_review")
+def run_swing_review() -> None:
+    from core.analyzers.review import run_review as _run_review
+
+    _run_review(strategy="medium_term")

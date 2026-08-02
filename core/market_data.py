@@ -358,3 +358,64 @@ def get_stock_history_closes(
         record_data_source_health("历史行情", "failed", reason, 0)
         log_error(f"❌ 历史行情获取失败 [{code}]: {reason}")
         return []
+
+
+def get_stock_history_bars(
+    code: Any, end_date: str, max_sessions: int = 65
+) -> list[dict[str, Any]]:
+    """Return recent adjusted A-share daily bars ending on ``end_date``.
+
+    This is kept separate from ``get_stock_history_closes`` because review mode
+    needs post-selection closes, while the medium-term selector needs bars
+    leading up to one already-known close date.
+    """
+    try:
+        end_day = datetime.datetime.strptime(str(end_date), "%Y-%m-%d")
+    except ValueError:
+        record_data_source_health("历史行情", "failed", "结束日期无效", 0)
+        return []
+
+    session_count = max(1, int(max_sessions))
+    start_day = end_day - timedelta(days=session_count * 3 + 10)
+    sec_id = f"1.{code}" if str(code).startswith("6") else f"0.{code}"
+    params = {
+        "secid": sec_id,
+        "klt": "101",
+        "fqt": "1",
+        "beg": start_day.strftime("%Y%m%d"),
+        "end": end_day.strftime("%Y%m%d"),
+        "lmt": str(session_count + 20),
+        "fields1": "f1,f2,f3,f4,f5,f6",
+        "fields2": "f51,f52,f53,f54,f55,f56",
+    }
+    try:
+        resp = request_get(
+            settings.URL_HISTORY,
+            headers=get_random_header(),
+            params=params,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        klines = (resp.json().get("data") or {}).get("klines") or []
+        bars: list[dict[str, Any]] = []
+        for raw_row in klines:
+            columns = str(raw_row or "").split(",")
+            if len(columns) < 6 or columns[0] > str(end_date):
+                continue
+            try:
+                close = float(columns[2])
+                volume = float(columns[5])
+            except (TypeError, ValueError):
+                continue
+            if close <= 0 or volume < 0:
+                continue
+            bars.append({"date": columns[0], "close": close, "volume": volume})
+        bars.sort(key=lambda item: str(item["date"]))
+        recent_bars = bars[-session_count:]
+        record_data_source_health("历史行情", "success", "", len(recent_bars))
+        return recent_bars
+    except Exception as exc:
+        reason = _redact_sensitive_text(exc)
+        record_data_source_health("历史行情", "failed", reason, 0)
+        log_error(f"❌ 历史行情获取失败 [{code}]: {reason}")
+        return []

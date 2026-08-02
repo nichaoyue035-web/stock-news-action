@@ -41,6 +41,8 @@ REQUIRED_ENV_BY_MODE: Final[dict[str, tuple[str, ...]]] = {
     "us_periodic": ("DEEPSEEK_API_KEY", "TG_BOT_TOKEN", "TG_CHAT_ID"),
     "daily_health": ("TG_BOT_TOKEN_MONITOR", "TG_CHAT_ID_MONITOR"),
     "radar": ("TG_BOT_TOKEN", "TG_CHAT_ID"),
+    "swing": ("TG_BOT_TOKEN", "TG_CHAT_ID"),
+    "swing_review": ("TG_BOT_TOKEN", "TG_CHAT_ID"),
     "status_panel": ("TG_BOT_TOKEN_MONITOR", "TG_CHAT_ID_MONITOR"),
 }
 
@@ -71,16 +73,41 @@ def _validate_required_env(mode: str) -> None:
 
 
 def _bootstrap_modules() -> (
-    Tuple[SimpleRunner, SimpleRunner, AnalysisRunner, SimpleRunner, Logger, Logger]
+    Tuple[
+        SimpleRunner,
+        SimpleRunner,
+        SimpleRunner,
+        AnalysisRunner,
+        SimpleRunner,
+        SimpleRunner,
+        Logger,
+        Logger,
+    ]
 ):
     """Lazily import runtime modules and return callable handlers."""
     try:
-        from core.analyzer import run_recommend, run_track, run_analysis, run_review
+        from core.analyzer import (
+            run_analysis,
+            run_recommend,
+            run_review,
+            run_swing,
+            run_swing_review,
+            run_track,
+        )
         from utils.notifier import log_info, log_error
     except Exception as exc:
         _fatal(f"❌ 模块加载失败: {exc}")
 
-    return run_recommend, run_track, run_analysis, run_review, log_info, log_error
+    return (
+        run_recommend,
+        run_swing,
+        run_track,
+        run_analysis,
+        run_review,
+        run_swing_review,
+        log_info,
+        log_error,
+    )
 
 
 def _resolve_mode(argv: list[str]) -> str:
@@ -243,18 +270,29 @@ def main() -> None:
 
         run_yfinance_dev_probe()
         return
-    run_recommend, run_track, run_analysis, run_review, log_info, log_error = (
-        _bootstrap_modules()
-    )
+    (
+        run_recommend,
+        run_swing,
+        run_track,
+        run_analysis,
+        run_review,
+        run_swing_review,
+        log_info,
+        log_error,
+    ) = _bootstrap_modules()
     log_info(f"🚀 指挥中心启动 | 目标模式: [{mode}]")
 
     try:
         if mode == "recommend":
             run_recommend()
+        elif mode == "swing":
+            run_swing()
         elif mode == "track":
             run_track()
         elif mode == "review":
             run_review()
+        elif mode == "swing_review":
+            run_swing_review()
         elif mode in SUPPORTED_ANALYSIS_MODES:
             run_analysis(mode)
         else:

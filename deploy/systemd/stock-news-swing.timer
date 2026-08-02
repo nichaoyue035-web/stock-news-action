@@ -1,0 +1,10 @@
+[Unit]
+Description=Run one A-share medium-term observation selection after the close
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 15:20:00 Asia/Shanghai
+Persistent=true
+Unit=stock-news@swing.service
+
+[Install]
+WantedBy=timers.target

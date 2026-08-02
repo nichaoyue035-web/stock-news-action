@@ -207,6 +207,22 @@ PRICE_ALERT_MAX_COMPARISON_GAP_MINUTES = _env_positive_int(
     "PRICE_ALERT_MAX_COMPARISON_GAP_MINUTES", 6
 )
 
+# Medium-term A-share observation selection.  This is deliberately separate
+# from the minute-level radar: it runs after the close and only emits one
+# evidence-backed observation at a time.
+SWING_HISTORY_SESSIONS = _env_positive_int("SWING_HISTORY_SESSIONS", 65)
+SWING_MIN_20D_RETURN_PCT = _env_positive_float("SWING_MIN_20D_RETURN_PCT", 3.0)
+SWING_MIN_60D_RETURN_PCT = _env_positive_float("SWING_MIN_60D_RETURN_PCT", 8.0)
+SWING_MAX_5D_RETURN_PCT = _env_positive_float("SWING_MAX_5D_RETURN_PCT", 12.0)
+SWING_MAX_DISTANCE_60D_HIGH_PCT = _env_positive_float(
+    "SWING_MAX_DISTANCE_60D_HIGH_PCT", 12.0
+)
+SWING_MIN_VOLUME_RATIO = _env_positive_float("SWING_MIN_VOLUME_RATIO", 1.0)
+SWING_NEWS_LOOKBACK_MINUTES = _env_positive_int(
+    "SWING_NEWS_LOOKBACK_MINUTES", 3 * 24 * 60
+)
+SWING_OBSERVATION_DAYS = _env_positive_int("SWING_OBSERVATION_DAYS", 45)
+
 # Interactive market radar. It intentionally uses a separate configured A-share
 # list so the existing WATCHLIST_CODES monitor keeps its current behaviour.
 RADAR_A_SHARE_CODES = [

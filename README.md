@@ -56,6 +56,8 @@
 | `radar` | 实时标的雷达 | 对配置的 A 股和可选美股数据建立自动短时追踪，按确认、失效或到期推送状态；使用与 `track` 相同的主机器人 |
 | `global` | 三小时市场总结 | 汇总近 3 小时国内外的重要市场变化，提炼事实、传导路径和后续验证点；无实质变化时不推送 |
 | `recommend` | AI 每日股票观察 | 从热门股票和近期新闻中选择一个观察标的，保存到 `stock_pick.json` 并写入 `history.csv` |
+| `swing` | A 股中期观察选股 | 收盘后从成交活跃股中筛选趋势、成交与近三日公司相关信息同时成立的唯一候选；观察期约 45 天 |
+| `swing_review` | 中期观察胜率回看 | 每周按 T+20、T+40 交易日统计中期观察记录的胜率（正收益占比）和平均收益 |
 | `track` | 跟踪已选观察标的 | 读取 `stock_pick.json` 中的标的，获取最新行情并生成简短跟踪观点 |
 | `review` | 历史表现回看 | 读取 `history.csv`，按 T+1、T+5、T+20 交易日统一计算正收益占比和平均收益 |
 | `daily_health` | VPS 每日健康提醒 | 向监控 Telegram 频道推送最近一次任务状态；失败、异常或状态过期会明确标红 |
@@ -91,6 +93,7 @@
 | `PRICE_ALERT_MINUTE_CHANGE_PCT` | 短时价格异动阈值（百分比） | `monitor` 行情通道；默认 `1.0` |
 | `PRICE_ALERT_COOLDOWN_MINUTES` | 同一股票同方向异动的提醒冷却时间 | `monitor` 行情通道；默认 `15` 分钟 |
 | `PRICE_ALERT_MAX_COMPARISON_GAP_MINUTES` | 允许与上一笔行情采样比较的最大间隔 | `monitor` 行情通道；默认 `6` 分钟，匹配五分钟定时器及其抖动，并避免服务中断后误报 |
+| `SWING_*` | A 股中期观察筛选条件 | `swing`；默认收盘后按 20/60 日趋势、近 5 日不过热、成交量与近三日公司相关信息筛选，观察期 45 天 |
 | `STATE_DIR` | 持久化运行与观察状态目录 | VPS 建议 `/var/lib/stock-news-action`；未设置时仍使用仓库目录，`recommend/track/review` 的状态会一并保存到这里 |
 | `STATE_BACKUP_DIR` | SQLite 本地备份目录 | 默认 `STATE_DIR/backups`；每天维护任务生成一个一致性 `.sqlite3` 备份，仍建议将该目录异地复制 |
 | `RUN_STATUS_DIR` | 分模式健康状态目录 | 每个模式独立保存心跳，避免某个无关任务覆盖另一个模式的失败状态 |
@@ -176,6 +179,8 @@ python main.py after_market
 python main.py track
 python main.py review
 python main.py radar
+python main.py swing
+python main.py swing_review
 python main.py maintenance
 python main.py metrics
 ```
@@ -237,6 +242,16 @@ GitHub Actions 更适合作为手动回退或日常任务，不应作为此监�
 4. 同一标的单个交易日默认只发送一次初始候选；初始消息送达失败不会被误记为已推送。
    Telegram 可延长或停止本次追踪，也可选择在配置天数内不再推送该标的。它不是下单入口，
    也不会让旧价格直接变成操作指令；只有允许的 Telegram 用户可以点击生效。
+
+### A 股中期观察选股
+
+`swing` 用于替代高频异动筛选的低噪音使用方式。它在每个 A 股交易日收盘后运行一次，先从成交额靠前的股票中读取近期日线，只有同时满足以下条件才会发送一只观察标的：
+
+1. 收盘价高于 20 日均线、20 日均线高于 60 日均线，且 20/60 日趋势达到配置门槛；
+2. 近 5 日没有超过配置的过热涨幅，距离近 60 日高点未过远，且近期成交量没有萎缩；
+3. 近三日存在明确提到该公司的可核对新闻或公告线索。
+
+没有合格标的时不会为了凑数推送；已有中期观察标的时，会在默认 45 天观察期内停止新增。每个中期标的会写入 `history.csv` 并标记为 `medium_term`；`swing_review` 每周在 T+20 与 T+40 交易日口径分别统计胜率（正收益占比）和平均收益。统计只用于检查历史表现，样本少或行情不足时不会被写成策略有效或未来收益保证。
 
 美股首版通过 Polygon 快照接口按分钟取数，因此实际新鲜度受你的 Polygon 套餐和交易所
 数据权限影响。若数据源返回失败，日志会明确报错；未配置 Key 时则只运行 A 股部分。
@@ -384,6 +399,8 @@ sudo systemctl enable --now stock-news-after-market.timer
 sudo systemctl enable --now stock-news-funds.timer
 sudo systemctl enable --now stock-news-daily-health.timer
 sudo systemctl enable --now stock-news-radar.timer
+sudo systemctl enable --now stock-news-swing.timer
+sudo systemctl enable --now stock-news-swing-review.timer
 sudo systemctl enable --now stock-news-maintenance.timer
 sudo systemctl enable --now stock-news-interaction.service
 systemctl list-timers 'stock-news-*'

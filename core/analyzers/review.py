@@ -9,9 +9,10 @@ from typing import Any
 
 from config import settings
 from core.data_fetcher import get_stock_history_closes, reset_data_source_health
-from utils.notifier import log_error
+from utils.notifier import log_error, log_info
 
 REVIEW_HORIZONS = (1, 5, 20)
+MEDIUM_TERM_REVIEW_HORIZONS = (20, 40)
 
 
 def _calculate_forward_returns(
@@ -39,7 +40,7 @@ def _calculate_forward_returns(
     return returns
 
 
-def run_review() -> None:
+def run_review(*, strategy: str | None = None) -> None:
     """Run observation history review mode."""
     from core.formatter import _format_market_message
     from core.runtime import (
@@ -57,20 +58,29 @@ def run_review() -> None:
         with open(settings.HISTORY_FILE, "r", encoding="utf-8") as file:
             rows = list(csv.DictReader(file))
 
+        if strategy:
+            rows = [row for row in rows if row.get("Strategy", "legacy") == strategy]
         recent_rows = rows[-10:] if len(rows) > 10 else rows
+        horizons = (
+            MEDIUM_TERM_REVIEW_HORIZONS
+            if strategy == "medium_term"
+            else REVIEW_HORIZONS
+        )
+        strategy_label = "中期观察" if strategy == "medium_term" else "观察记录"
+        if not recent_rows:
+            log_info(f"{strategy_label}没有可复盘的历史记录")
+            return
         details: list[str] = []
         skipped_reasons: list[str] = []
         total_rows = len(recent_rows)
-        metrics: dict[int, list[float]] = {
-            horizon: [] for horizon in REVIEW_HORIZONS
-        }
+        metrics: dict[int, list[float]] = {horizon: [] for horizon in horizons}
 
         for row in recent_rows:
             closes = get_stock_history_closes(
-                row.get("Code"), row.get("Date", ""), max(REVIEW_HORIZONS)
+                row.get("Code"), row.get("Date", ""), max(horizons)
             )
             forward_returns = _calculate_forward_returns(
-                row.get("Start_Price"), closes
+                row.get("Start_Price"), closes, horizons
             )
             if not forward_returns:
                 skipped_reasons.append(
@@ -79,7 +89,7 @@ def run_review() -> None:
                 continue
 
             row_parts = []
-            for horizon in REVIEW_HORIZONS:
+            for horizon in horizons:
                 if horizon not in forward_returns:
                     continue
                 pct = forward_returns[horizon]
@@ -94,7 +104,7 @@ def run_review() -> None:
             return
 
         metric_lines = []
-        for horizon in REVIEW_HORIZONS:
+        for horizon in horizons:
             values = metrics[horizon]
             if not values:
                 metric_lines.append(f"T+{horizon}: 暂无完整样本")
@@ -103,7 +113,7 @@ def run_review() -> None:
             avg_profit = sum(values) / len(values)
             metric_lines.append(
                 f"T+{horizon}: 样本 {len(values)}，"
-                f"正收益占比 {win_rate:.0f}%，平均收益 {avg_profit:+.2f}%"
+                f"胜率（正收益）{win_rate:.0f}%，平均收益 {avg_profit:+.2f}%"
             )
 
         now = datetime.now(settings.SHA_TZ)
@@ -135,13 +145,13 @@ def run_review() -> None:
         )
         _send_tg_with_summary(
             _format_market_message(
-                "观察记录复盘辅助",
+                f"{strategy_label}复盘辅助",
                 report_time=now.strftime("%Y-%m-%d %H:%M"),
                 source="history.csv / 东方财富行情",
                 category="复盘辅助",
                 importance="低（复盘辅助）",
                 summary=summary,
-                impact="仅用于回看观察记录表现，不能证明策略有效，也不构成后续操作建议。",
+                impact="仅用于回看观察记录的胜率与表现，不能证明策略有效，也不构成后续操作建议。",
                 links="未知",
             )
         )
