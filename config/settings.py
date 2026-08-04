@@ -178,6 +178,28 @@ GDELT_DISCOVERY_ENABLED = _env_enabled("GDELT_DISCOVERY_ENABLED")
 GDELT_DISCOVERY_MAX_RECORDS = _env_positive_int(
     "GDELT_DISCOVERY_MAX_RECORDS", 12
 )
+TRUMP_MEDIA_RELAY_ENABLED = _env_enabled("TRUMP_MEDIA_RELAY_ENABLED")
+TRUMP_MEDIA_RELAY_MAX_RECORDS = _env_positive_int(
+    "TRUMP_MEDIA_RELAY_MAX_RECORDS", 10
+)
+TRUMP_MEDIA_RELAY_QUERY = os.getenv(
+    "TRUMP_MEDIA_RELAY_QUERY",
+    '"Donald Trump" "Truth Social" when:1d',
+).strip()
+
+# Truth Social has no credential configured here: this opt-in adapter reads only
+# the public posts returned by the account-status endpoint.  Keep the volume
+# bounded because the monitor can invoke news collection frequently.
+TRUTH_SOCIAL_ENABLED = _env_enabled("TRUTH_SOCIAL_ENABLED")
+TRUTH_SOCIAL_ACCOUNT_ID = os.getenv(
+    "TRUTH_SOCIAL_ACCOUNT_ID", "107780257626128497"
+).strip()
+TRUTH_SOCIAL_ACCOUNT_USERNAME = os.getenv(
+    "TRUTH_SOCIAL_ACCOUNT_USERNAME", "realDonaldTrump"
+).strip().lstrip("@")
+TRUTH_SOCIAL_MAX_POSTS = min(
+    40, _env_positive_int("TRUTH_SOCIAL_MAX_POSTS", 10)
+)
 GDELT_DISCOVERY_QUERY = os.getenv(
     "GDELT_DISCOVERY_QUERY",
     '"military strike" OR blockade OR "state of emergency" OR "bank run" '

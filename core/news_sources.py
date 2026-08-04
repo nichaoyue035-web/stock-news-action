@@ -10,6 +10,8 @@ SEC_SUBMISSIONS_URL = news_disclosures.SEC_SUBMISSIONS_URL
 CSRC_NEWS_URL = news_disclosures.CSRC_NEWS_URL
 SSE_ANNOUNCEMENTS_URL = news_disclosures.SSE_ANNOUNCEMENTS_URL
 GDELT_DOC_API_URL = news_disclosures.GDELT_DOC_API_URL
+TRUTH_SOCIAL_ACCOUNT_STATUSES_URL = news_disclosures.TRUTH_SOCIAL_ACCOUNT_STATUSES_URL
+TRUMP_MEDIA_RELAY_TRUSTED_DOMAINS = news_disclosures.TRUMP_MEDIA_RELAY_TRUSTED_DOMAINS
 CSRC_MATERIAL_TERMS = news_disclosures.CSRC_MATERIAL_TERMS
 SSE_MATERIAL_TERMS = news_disclosures.SSE_MATERIAL_TERMS
 
@@ -21,4 +23,6 @@ _fetch_external_rss_news = news_rss._fetch_external_rss_news
 _fetch_cn_official_news = news_disclosures._fetch_cn_official_news
 _fetch_sec_edgar_filings = news_disclosures._fetch_sec_edgar_filings
 _fetch_gdelt_discovery_news = news_disclosures._fetch_gdelt_discovery_news
+_fetch_trump_media_relay = news_disclosures._fetch_trump_media_relay
+_fetch_truth_social_posts = news_disclosures._fetch_truth_social_posts
 _fetch_second_batch_news = news_disclosures._fetch_second_batch_news

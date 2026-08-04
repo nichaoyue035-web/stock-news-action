@@ -1202,6 +1202,117 @@ def test_second_batch_gdelt_is_discovery_only(monkeypatch):
     assert _news_alert_severity(items[0]) is None
 
 
+def test_trump_media_relay_requires_explicit_enablement(monkeypatch):
+    import core.data_fetcher as data_fetcher
+
+    monkeypatch.setattr(data_fetcher.settings, "TRUMP_MEDIA_RELAY_ENABLED", False)
+    data_fetcher.reset_data_source_health()
+
+    assert data_fetcher._fetch_trump_media_relay(60) == []
+    assert (
+        data_fetcher.get_data_source_health()["特朗普帖文媒体转述"]["status"]
+        == "skipped"
+    )
+
+
+def test_trump_media_relay_keeps_only_trusted_recent_article(monkeypatch):
+    import core.data_fetcher as data_fetcher
+
+    seen_at = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+    class Response:
+        content = f"""
+        <rss><channel>
+          <item>
+            <title>Trump posts a new Truth Social message</title>
+            <link>https://news.google.com/rss/articles/reuters-item</link>
+            <pubDate>{seen_at}</pubDate>
+            <source url="https://www.reuters.com">Reuters</source>
+          </item>
+          <item>
+            <title>Untrusted relay copy</title>
+            <link>https://news.google.com/rss/articles/untrusted-item</link>
+            <pubDate>{seen_at}</pubDate>
+            <source url="https://example.com">Example</source>
+          </item>
+        </channel></rss>
+        """.encode()
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(data_fetcher.settings, "TRUMP_MEDIA_RELAY_ENABLED", True)
+    monkeypatch.setattr(data_fetcher.settings, "TRUMP_MEDIA_RELAY_MAX_RECORDS", 5)
+    monkeypatch.setattr(data_fetcher.requests, "get", lambda *_args, **_kwargs: Response())
+
+    items = data_fetcher._fetch_trump_media_relay(60)
+
+    assert len(items) == 1
+    assert items[0]["source"] == "特朗普帖文媒体转述｜Reuters"
+    assert items[0]["link"] == "https://news.google.com/rss/articles/reuters-item"
+    assert items[0]["media_relay"] is True
+
+
+def test_truth_social_requires_explicit_enablement(monkeypatch):
+    import core.data_fetcher as data_fetcher
+
+    monkeypatch.setattr(data_fetcher.settings, "TRUTH_SOCIAL_ENABLED", False)
+    data_fetcher.reset_data_source_health()
+
+    assert data_fetcher._fetch_truth_social_posts(60) == []
+    assert data_fetcher.get_data_source_health()["Truth Social（特朗普）"]["status"] == "skipped"
+
+
+def test_truth_social_normalizes_recent_public_post(monkeypatch):
+    import core.data_fetcher as data_fetcher
+
+    created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [
+                {
+                    "id": "123456789",
+                    "created_at": created_at,
+                    "content": "<p>Trade <strong>policy</strong> update</p>",
+                    "url": "https://truthsocial.com/@realDonaldTrump/123456789",
+                    "account": {"id": "107780257626128497"},
+                }
+            ]
+
+    monkeypatch.setattr(data_fetcher.settings, "TRUTH_SOCIAL_ENABLED", True)
+    monkeypatch.setattr(data_fetcher.requests, "get", lambda *_args, **_kwargs: Response())
+
+    items = data_fetcher._fetch_truth_social_posts(60)
+
+    assert len(items) == 1
+    assert items[0]["title"] == "特朗普 Truth Social｜Trade policy update"
+    assert items[0]["digest"].endswith("Trade policy update")
+    assert items[0]["link"] == "https://truthsocial.com/@realDonaldTrump/123456789"
+    assert items[0]["primary_source"] is True
+
+
+def test_truth_social_rejects_non_json_response(monkeypatch):
+    import core.data_fetcher as data_fetcher
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            raise ValueError("anti-bot page")
+
+    monkeypatch.setattr(data_fetcher.settings, "TRUTH_SOCIAL_ENABLED", True)
+    monkeypatch.setattr(data_fetcher.requests, "get", lambda *_args, **_kwargs: Response())
+    data_fetcher.reset_data_source_health()
+
+    assert data_fetcher._fetch_truth_social_posts(60) == []
+    assert data_fetcher.get_data_source_health()["Truth Social（特朗普）"]["status"] == "failed"
+
+
 def test_monitor_store_persists_news_and_alert_delivery(tmp_path):
     store = MonitorStore(str(tmp_path / "monitor.db"))
     store.initialize()

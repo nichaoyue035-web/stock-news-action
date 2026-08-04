@@ -84,6 +84,12 @@
 | `CSRC_NEWS_ENABLED` | 启用中国证监会高信号公告抓取 | 设为 `1` 后启用；仅保留监管、退市、融资融券等高信号条目；日期精度不足时不用于分钟级推送 |
 | `SSE_ANNOUNCEMENTS_ENABLED` | 启用上交所高信号公告抓取 | 设为 `1` 后启用；过滤做市等常规公告，仅保留交易、监管、停复牌等条目 |
 | `GDELT_DISCOVERY_ENABLED` | 启用 GDELT 全球事件线索层 | 设为 `1` 后启用；只作待核验线索，不会直接触发 Telegram 提醒 |
+| `TRUMP_MEDIA_RELAY_ENABLED` | 启用特朗普帖文的权威媒体转述层 | 设为 `1` 后，通过个人 Google News RSS 阅读器发现 Reuters/AP 中明确提到 Truth Social 的报道；保留报道链接，不把单一报道视为交易结论 |
+| `TRUMP_MEDIA_RELAY_MAX_RECORDS` | 单次最多读取的权威媒体报道数 | 默认 `10`，避免非必要地扩大查询范围 |
+| `TRUTH_SOCIAL_ENABLED` | 启用特朗普 Truth Social 公开帖文抓取 | 设为 `1` 后低频读取公开帖文；无需账号或密钥，若被反爬页面拦截会明确记录失败 |
+| `TRUTH_SOCIAL_ACCOUNT_ID` | Truth Social 账户数字 ID | 默认特朗普账户 `107780257626128497`；仅在改为跟踪其他公开账户时调整 |
+| `TRUTH_SOCIAL_ACCOUNT_USERNAME` | 公开帖文链接中的账户名 | 默认 `realDonaldTrump` |
+| `TRUTH_SOCIAL_MAX_POSTS` | 单次最多读取的公开帖文数 | 默认 `10`，最大 `40`，避免高频抓取 |
 | `SEC_WATCHLIST_TICKERS` | SEC 披露观察清单，美股代码逗号分隔 | 例如 `AAPL,NVDA,TSLA`；必须同时配置合规识别信息 |
 | `SEC_USER_AGENT` | SEC 请求识别信息 | 必须含真实可联系邮箱，例如 `stock-news-action your-email@example.com`；不配置则 SEC 明确跳过 |
 | `SEC_MAX_FILINGS_PER_TICKER` | 每只美股最多读取的近期披露数 | 默认 `3`；只读取 8-K、6-K、10-Q、10-K、20-F、40-F 等披露索引 |
@@ -132,6 +138,8 @@ export CUSTOM_NEWS_RSS="https://example.com/feed.xml,https://another-site.com/rs
 export CSRC_NEWS_ENABLED="1"
 export SSE_ANNOUNCEMENTS_ENABLED="1"
 export GDELT_DISCOVERY_ENABLED="1"
+export TRUMP_MEDIA_RELAY_ENABLED="1"
+export TRUTH_SOCIAL_ENABLED="1"
 export SEC_WATCHLIST_TICKERS="AAPL,NVDA,TSLA"
 export SEC_USER_AGENT="stock-news-action your-email@example.com"
 export MARKET_ALERT_INTERACTION_ENABLED="1"
@@ -341,6 +349,8 @@ python main.py daily
 - 中国证监会与上交所：只接收明确的监管、交易制度、停复牌、退市等高信号公告。官网列表通常只有日期，没有精确发布时间，因此它们会进入日报/盘中分析，但不会被伪装成刚发生的高频提醒。
 - SEC EDGAR：只跟踪你明确配置的美股代码。SEC 要求自动访问在请求头中声明可联系身份；未配置 `SEC_USER_AGENT` 或观察清单时，系统记录“跳过”而不会假装获取成功。
 - GDELT：用于全球事件发现。GDELT 返回的标题只会带“待核验线索”标记进入内部新闻流，不会直接推送到 Telegram；需要以原始报道或官方公告确认后，才应作为事实使用。
+- 特朗普帖文媒体转述：个人 Google News RSS 阅读器仅保留 Reuters/AP 中明确出现“Donald Trump”和“Truth Social”的报道。报道原文而非 RSS 聚合结果才是可核验依据；它会进入新闻流，但不会把单条报道自动写成交易结论。
+- Truth Social（特朗普）：可选读取特朗普账户的公开帖文，不需登录或密钥，默认关闭。帖文作为一手公开信息保留原文链接；未按内容自动认定为市场重大事件。若接口返回反爬拦截页或异常格式，数据源健康状态会标记为失败，而不会伪装成“没有新帖”。
 
 ### 事件跟踪按钮
 

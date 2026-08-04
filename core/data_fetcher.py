@@ -55,6 +55,8 @@ SEC_SUBMISSIONS_URL = news_sources.SEC_SUBMISSIONS_URL
 CSRC_NEWS_URL = news_sources.CSRC_NEWS_URL
 SSE_ANNOUNCEMENTS_URL = news_sources.SSE_ANNOUNCEMENTS_URL
 GDELT_DOC_API_URL = news_sources.GDELT_DOC_API_URL
+TRUTH_SOCIAL_ACCOUNT_STATUSES_URL = news_sources.TRUTH_SOCIAL_ACCOUNT_STATUSES_URL
+TRUMP_MEDIA_RELAY_TRUSTED_DOMAINS = news_sources.TRUMP_MEDIA_RELAY_TRUSTED_DOMAINS
 CSRC_MATERIAL_TERMS = news_sources.CSRC_MATERIAL_TERMS
 SSE_MATERIAL_TERMS = news_sources.SSE_MATERIAL_TERMS
 _extract_json_payload = news_sources._extract_json_payload
@@ -64,6 +66,8 @@ _fetch_external_rss_news = news_sources._fetch_external_rss_news
 _fetch_cn_official_news = news_sources._fetch_cn_official_news
 _fetch_sec_edgar_filings = news_sources._fetch_sec_edgar_filings
 _fetch_gdelt_discovery_news = news_sources._fetch_gdelt_discovery_news
+_fetch_trump_media_relay = news_sources._fetch_trump_media_relay
+_fetch_truth_social_posts = news_sources._fetch_truth_social_posts
 _fetch_second_batch_news = news_sources._fetch_second_batch_news
 _fetch_eastmoney_news = news_sources._fetch_eastmoney_news
 

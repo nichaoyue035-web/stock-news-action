@@ -1,10 +1,11 @@
-"""Official Chinese, SEC, and GDELT source adapters."""
+"""Dedicated disclosure, discovery, and public-post source adapters."""
 
 from __future__ import annotations
 
 import datetime
 import re
 import time
+import xml.etree.ElementTree as ElementTree
 from datetime import timedelta
 from html.parser import HTMLParser
 from typing import Any, Optional
@@ -31,6 +32,11 @@ SSE_ANNOUNCEMENTS_URL = (
     "https://www.sse.com.cn/disclosure/announcement/general/index.shtml"
 )
 GDELT_DOC_API_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
+GOOGLE_NEWS_RSS_SEARCH_URL = "https://news.google.com/rss/search"
+TRUTH_SOCIAL_ACCOUNT_STATUSES_URL = (
+    "https://truthsocial.com/api/v1/accounts/{account_id}/statuses"
+)
+TRUMP_MEDIA_RELAY_TRUSTED_DOMAINS = ("reuters.com", "apnews.com")
 
 CSRC_MATERIAL_TERMS: tuple[str, ...] = (
     "暂停交易",
@@ -450,6 +456,216 @@ def _fetch_gdelt_discovery_news(
     return items
 
 
+def _is_trump_media_relay_domain(host: str) -> bool:
+    """Allow Reuters and AP article links, including their www subdomains."""
+    normalized = host.lower().rstrip(".")
+    return any(
+        normalized == domain or normalized.endswith(f".{domain}")
+        for domain in TRUMP_MEDIA_RELAY_TRUSTED_DOMAINS
+    )
+
+
+def _fetch_trump_media_relay(
+    minutes_lookback: Optional[int],
+) -> list[dict[str, Any]]:
+    """Collect Reuters/AP Trump Truth Social reports from a personal RSS reader feed."""
+    source_name = "特朗普帖文媒体转述"
+    if not settings.TRUMP_MEDIA_RELAY_ENABLED:
+        record_data_source_health(source_name, "skipped", "未启用", 0)
+        return []
+    if not settings.TRUMP_MEDIA_RELAY_QUERY:
+        record_data_source_health(source_name, "skipped", "查询条件为空", 0)
+        return []
+
+    now = datetime.datetime.now(settings.SHA_TZ)
+    threshold = now - timedelta(minutes=minutes_lookback if minutes_lookback else 1440)
+    try:
+        response = request_get(
+            GOOGLE_NEWS_RSS_SEARCH_URL,
+            params={
+                "q": settings.TRUMP_MEDIA_RELAY_QUERY,
+                "hl": "en-US",
+                "gl": "US",
+                "ceid": "US:en",
+            },
+            headers=_official_request_headers(),
+            timeout=15,
+        )
+        response.raise_for_status()
+        root = ElementTree.fromstring(response.content)
+    except (requests.RequestException, ValueError, ElementTree.ParseError) as exc:
+        reason = _redact_sensitive_text(exc)
+        record_data_source_health(source_name, "failed", reason, 0)
+        log_error(f"⚠️ {source_name}抓取失败: {reason}")
+        return []
+
+    raw_items = root.findall("./channel/item")
+    if root.tag.lower() != "rss":
+        record_data_source_health(source_name, "failed", "返回格式异常", 0)
+        return []
+
+    items: list[dict[str, Any]] = []
+    for entry in raw_items:
+        title = _strip_html(entry.findtext("title"))
+        link = str(entry.findtext("link") or "").strip()
+        published_at = _parse_datetime(entry.findtext("pubDate"))
+        source_element = entry.find("source")
+        media_name = _strip_html(
+            source_element.text if source_element is not None else ""
+        )
+        media_url = (
+            str(source_element.attrib.get("url") or "").strip()
+            if source_element is not None
+            else ""
+        )
+        media_host = urlparse(media_url).netloc.lower()
+        parsed_link = urlparse(link)
+        if (
+            not title
+            or not published_at
+            or published_at < threshold
+            or parsed_link.scheme not in {"http", "https"}
+            or not parsed_link.netloc
+            or not _is_trump_media_relay_domain(media_host)
+        ):
+            continue
+        items.append(
+            {
+                "title": f"特朗普帖文转述｜{media_name}｜{title}",
+                "digest": (
+                    f"{media_name} 的报道在个人 RSS 阅读器中提及特朗普的 Truth Social 表态；"
+                    "请打开链接核对完整措辞、发布时间与市场影响。"
+                ),
+                "link": link,
+                "time_str": published_at.strftime("%H:%M"),
+                "datetime": published_at,
+                "source": f"{source_name}｜{media_name}",
+                "category": "overseas",
+                "importance": "medium",
+                "market_scope": "全球",
+                "media_relay": True,
+                "media_source_url": media_url,
+            }
+        )
+        if len(items) >= settings.TRUMP_MEDIA_RELAY_MAX_RECORDS:
+            break
+
+    record_data_source_health(source_name, "success", "", len(items))
+    log_info(f"{source_name}抓取成功: returned_count={len(items)}")
+    return items
+
+
+def _truth_social_request_headers() -> dict[str, str]:
+    """Identify this low-volume reader when requesting public post data."""
+    return {
+        "User-Agent": "stock-news-action/1.0",
+        "Accept": "application/json",
+    }
+
+
+def _truth_social_post_link(post: dict[str, Any]) -> str:
+    """Keep only a Truth Social post URL; never forward an arbitrary provider URL."""
+    raw_link = str(post.get("url") or "").strip()
+    parsed = urlparse(raw_link)
+    host = parsed.netloc.lower()
+    if parsed.scheme in {"http", "https"} and (
+        host == "truthsocial.com" or host.endswith(".truthsocial.com")
+    ):
+        return raw_link
+
+    post_id = str(post.get("id") or "").strip()
+    if not post_id:
+        return ""
+    username = quote(settings.TRUTH_SOCIAL_ACCOUNT_USERNAME, safe="")
+    return f"https://truthsocial.com/@{username}/{quote(post_id, safe='')}"
+
+
+def _fetch_truth_social_posts(
+    minutes_lookback: Optional[int],
+) -> list[dict[str, Any]]:
+    """Fetch recent public Trump Truth Social posts without authentication."""
+    source_name = "Truth Social（特朗普）"
+    if not settings.TRUTH_SOCIAL_ENABLED:
+        record_data_source_health(source_name, "skipped", "未启用", 0)
+        return []
+    if not settings.TRUTH_SOCIAL_ACCOUNT_ID:
+        record_data_source_health(source_name, "skipped", "未配置账户 ID", 0)
+        return []
+
+    now = datetime.datetime.now(settings.SHA_TZ)
+    threshold = now - timedelta(minutes=minutes_lookback if minutes_lookback else 1440)
+    try:
+        response = request_get(
+            TRUTH_SOCIAL_ACCOUNT_STATUSES_URL.format(
+                account_id=quote(settings.TRUTH_SOCIAL_ACCOUNT_ID, safe="")
+            ),
+            params={
+                "exclude_replies": "true",
+                "exclude_reblogs": "true",
+                "limit": settings.TRUTH_SOCIAL_MAX_POSTS,
+            },
+            headers=_truth_social_request_headers(),
+            timeout=15,
+        )
+        payload = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        reason = _redact_sensitive_text(exc)
+        record_data_source_health(source_name, "failed", reason, 0)
+        log_error(f"⚠️ {source_name}抓取失败: {reason}")
+        return []
+
+    if not isinstance(payload, list):
+        record_data_source_health(source_name, "failed", "返回格式异常", 0)
+        log_error(f"⚠️ {source_name}抓取失败: 返回格式异常")
+        return []
+
+    items: list[dict[str, Any]] = []
+    parsed_post_count = 0
+    for post in payload:
+        if not isinstance(post, dict) or post.get("reblog"):
+            continue
+        account = post.get("account")
+        account_id = str(account.get("id") or "") if isinstance(account, dict) else ""
+        if account_id and account_id != settings.TRUTH_SOCIAL_ACCOUNT_ID:
+            continue
+
+        published_at = _parse_datetime(post.get("created_at"))
+        content = " ".join(_strip_html(post.get("content")).split())
+        link = _truth_social_post_link(post)
+        if not published_at or not content or not link:
+            continue
+        parsed_post_count += 1
+        if published_at < threshold:
+            continue
+
+        title_text = content[:120].rstrip()
+        if len(content) > len(title_text):
+            title_text = f"{title_text}…"
+        items.append(
+            {
+                "title": f"特朗普 Truth Social｜{title_text}",
+                "digest": f"特朗普在 Truth Social 发布的公开帖文：{content}",
+                "link": link,
+                "time_str": published_at.strftime("%H:%M"),
+                "datetime": published_at,
+                "source": source_name,
+                "category": "overseas",
+                "importance": "medium",
+                "market_scope": "全球",
+                "primary_source": True,
+            }
+        )
+
+    if payload and not parsed_post_count:
+        record_data_source_health(source_name, "failed", "返回中没有可解析的公开帖文", 0)
+        log_error(f"⚠️ {source_name}抓取失败: 返回中没有可解析的公开帖文")
+        return []
+
+    record_data_source_health(source_name, "success", "", len(items))
+    log_info(f"{source_name}抓取成功: returned_count={len(items)}")
+    return items
+
+
 def _fetch_second_batch_news(minutes_lookback: Optional[int]) -> list[dict[str, Any]]:
     """Collect dedicated disclosures and discovery leads with explicit health logs."""
     items = _fetch_sec_edgar_filings(minutes_lookback)
@@ -476,4 +692,6 @@ def _fetch_second_batch_news(minutes_lookback: Optional[int]) -> list[dict[str, 
     else:
         record_data_source_health("上海证券交易所", "skipped", "未启用", 0)
     items.extend(_fetch_gdelt_discovery_news(minutes_lookback))
+    items.extend(_fetch_trump_media_relay(minutes_lookback))
+    items.extend(_fetch_truth_social_posts(minutes_lookback))
     return items
