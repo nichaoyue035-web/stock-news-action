@@ -17,6 +17,7 @@ def run_daily(prompts: dict[str, str]) -> None:
         _format_market_message,
         _format_news_prompt_line,
         _format_sources,
+        format_ai_insight,
     )
     from core.runtime import (
         _record_news_summary,
@@ -57,8 +58,8 @@ def run_daily(prompts: dict[str, str]) -> None:
                 source=_format_sources(news, "东方财富 / RSS"),
                 category="other",
                 importance="medium",
-                summary=content,
-                impact="用于快速了解市场主线、情绪和风险偏好，不构成买卖依据。",
+                summary=format_ai_insight(content),
+                impact="",
                 links=_format_links([item.get("link") for item in news[:5]]),
                 market_scope="A股",
                 related_sectors=[

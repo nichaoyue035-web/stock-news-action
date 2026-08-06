@@ -19,6 +19,7 @@ def run_periodic(prompts: dict[str, str]) -> None:
         _format_news_prompt_line,
         _format_sources,
         _format_weekday,
+        format_ai_insight,
     )
     from core.runtime import (
         _record_news_summary,
@@ -65,8 +66,8 @@ def run_periodic(prompts: dict[str, str]) -> None:
                 source=_format_sources(news, "东方财富 / RSS"),
                 category="盘中",
                 importance="低（盘中简报）",
-                summary=f"重点新闻：\n{_format_news_facts(news, limit=5)}",
-                impact=content,
+                summary=f"**重点新闻：**\n{_format_news_facts(news, limit=5)}",
+                impact=format_ai_insight(content),
                 links=_format_links([item.get("link") for item in news[:5]]),
                 market_scope="A股",
                 related_sectors=[

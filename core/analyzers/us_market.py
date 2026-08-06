@@ -50,6 +50,7 @@ def _run_us_market_brief(prompts: dict[str, str], mode: str) -> None:
         _format_news_prompt_line,
         _format_sources,
         _format_weekday,
+        format_ai_insight,
     )
     from core.runtime import (
         _record_news_summary,
@@ -103,8 +104,8 @@ def _run_us_market_brief(prompts: dict[str, str], mode: str) -> None:
             source=_format_sources(news, "海外 RSS / SEC"),
             category="market",
             importance=importance,
-            summary=f"重点新闻：\n{_format_news_facts(news, limit=5)}",
-            impact=content,
+            summary=f"**重点新闻：**\n{_format_news_facts(news, limit=5)}",
+            impact=format_ai_insight(content),
             links=_format_links([item.get("link") for item in news[:5]]),
             market_scope="美股 / 全球联动",
             related_sectors=[

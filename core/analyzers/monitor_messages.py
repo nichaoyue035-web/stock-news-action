@@ -179,15 +179,15 @@ def _format_compact_market_alert(
     takeaway, watch = _compact_market_insight(item, severity)
     lines = [
         f"{label} · {report_time or '未知时间'}",
-        headline,
-        f"来源：{source}",
+        f"**{headline}**",
+        f"**来源：** {source}",
     ]
     if digest and digest != headline:
-        lines.append(f"重点：{digest}")
-    lines.extend((f"影响：{takeaway}", f"接着看：{watch}"))
+        lines.append(f"**重点：** {digest}")
+    lines.extend((f"**影响：** {takeaway}", f"**接着看：** {watch}"))
     link = _compact_alert_text(item.get("link"), 300)
     if link:
-        lines.append(f"原文：{link}")
+        lines.append(f"**原文：** {link}")
     return "\n".join(lines)
 
 

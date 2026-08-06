@@ -19,6 +19,7 @@ def run_after_market(prompts: dict[str, str]) -> None:
         _format_news_prompt_line,
         _format_sources,
         _format_weekday,
+        format_ai_insight,
     )
     from core.runtime import (
         _record_news_summary,
@@ -77,8 +78,8 @@ def run_after_market(prompts: dict[str, str]) -> None:
                 source=_format_sources(news, "东方财富 / RSS"),
                 category=category,
                 importance=importance,
-                summary=f"重点新闻：\n{_format_news_facts(news, limit=6)}",
-                impact=content,
+                summary=f"**重点新闻：**\n{_format_news_facts(news, limit=6)}",
+                impact=format_ai_insight(content),
                 links=_format_links([item.get("link") for item in news[:5]]),
                 market_scope="A股",
                 related_sectors=[

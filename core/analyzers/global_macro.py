@@ -17,6 +17,7 @@ def run_global(prompts: dict[str, str]) -> None:
         _format_market_message,
         _format_news_prompt_line,
         _format_sources,
+        format_ai_insight,
     )
     from core.runtime import (
         _record_news_summary,
@@ -77,8 +78,8 @@ def run_global(prompts: dict[str, str]) -> None:
             source=_format_sources(news, "市场新闻源"),
             category="market",
             importance="medium",
-            summary=content,
-            impact="汇总过去三小时已发生的重要变化，供复核事实、传导路径和后续验证点。",
+            summary=format_ai_insight(content),
+            impact="",
             links=_format_links([item.get("link") for item in news[:5]]),
             market_scope="国内外市场",
             related_sectors=[

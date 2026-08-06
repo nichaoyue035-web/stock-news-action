@@ -19,6 +19,9 @@ logger = logging.getLogger("StockBot")
 
 SAFE_TELEGRAM_CHUNK_LENGTH = 3900
 STATUS_CALLBACK_DATA = "system:status"
+_TELEGRAM_TAG_RE = re.compile(
+    r"</?(?:b|strong|i|em|u|s|code|pre)>"
+)
 
 
 def status_button_markup() -> dict[str, Any]:
@@ -67,7 +70,7 @@ def _raise_in_ci(message: str) -> None:
 
 
 def _prepare_content(content) -> str:
-    """Return Telegram-safe plain text without HTML/Markdown markup."""
+    """Return Telegram-safe HTML while retaining the small set of useful emphasis tags."""
     text = html.unescape(str(content))
     extracted_links: list[str] = []
 
@@ -84,10 +87,23 @@ def _prepare_content(content) -> str:
         text,
         flags=re.IGNORECASE | re.DOTALL,
     )
-    text = re.sub(r"<[^>]*>", "", text)
-    text = re.sub(r"[<>]", "", text)
-    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
-    text = re.sub(r"__(.*?)__", r"\1", text)
+
+    # Formatters use Markdown-style emphasis internally. Convert it before
+    # escaping so arbitrary news/AI text cannot become executable Telegram HTML.
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)
+    text = re.sub(r"__(.+?)__", r"<b>\1</b>", text, flags=re.DOTALL)
+
+    protected_tags: dict[str, str] = {}
+
+    def _protect_tag(match: re.Match[str]) -> str:
+        key = f"\x00TELEGRAM_TAG_{len(protected_tags)}\x00"
+        protected_tags[key] = match.group(0)
+        return key
+
+    text = _TELEGRAM_TAG_RE.sub(_protect_tag, text)
+    text = html.escape(text, quote=False)
+    for key, tag in protected_tags.items():
+        text = text.replace(html.escape(key), tag)
 
     unique_links = []
     for link in extracted_links:
@@ -142,6 +158,7 @@ def send_tg(content, token=None, chat_id=None) -> bool:
         payload = {
             "chat_id": use_chat_id,
             "text": chunk,
+            "parse_mode": "HTML",
             "disable_web_page_preview": True,
             "reply_markup": status_button_markup(),
         }
@@ -201,6 +218,7 @@ def send_tg_interactive(
             json={
                 "chat_id": use_chat_id,
                 "text": safe_content,
+                "parse_mode": "HTML",
                 "disable_web_page_preview": True,
                 "reply_markup": with_status_button(reply_markup),
             },

@@ -7,7 +7,11 @@ import pytest
 
 import main
 from config import settings
-from core.formatter import _format_market_message, _infer_news_category
+from core.formatter import (
+    _format_market_message,
+    _infer_news_category,
+    format_ai_insight,
+)
 from core.analyzers.monitor import (
     _black_swan_alert_severity,
     _build_news_alert,
@@ -385,7 +389,28 @@ def test_market_message_keeps_only_reader_relevant_context():
     assert "重要性" not in content
     assert "影响范围" not in content
     assert "重点：流动性消息公布。" in content
-    assert "怎么看\n后续验证：核对午后成交。" in content
+    assert "**解读**\n后续验证：核对午后成交。" in content
+
+
+def test_ai_insight_formats_prediction_and_confidence_bar():
+    content = format_ai_insight(
+        "历史类比：政策预期变化通常先影响利率，再影响估值。\n"
+        "预测：若细则落地，相关板块可能先出现分化。\n"
+        "可信度：70%（来源和事实较完整）"
+    )
+
+    assert "**历史类比：**" in content
+    assert "**预测：**" in content
+    assert "**可信度：** ███████░░░ 70%" in content
+    assert "未量化" in format_ai_insight("可信度：0-100%")
+
+
+def test_telegram_preparation_preserves_bold_and_escapes_plain_angle_brackets():
+    from utils.notifier import _prepare_content
+
+    prepared = _prepare_content("**新闻标题**：A < 3；标签 <测试>")
+
+    assert prepared == "<b>新闻标题</b>：A &lt; 3；标签 &lt;测试&gt;"
 
 
 def test_news_category_infer():
@@ -537,8 +562,8 @@ def test_urgent_news_alert_is_compact_and_keeps_the_market_essence():
 
     assert "🚨 紧急" in content
     assert "突发导弹袭击升级" in content
-    assert "影响：风险取决于冲突是否扩大并扰乱油运。" in content
-    assert "接着看：看油价、运价、黄金与军工" in content
+    assert "**影响：** 风险取决于冲突是否扩大并扰乱油运。" in content
+    assert "**接着看：** 看油价、运价、黄金与军工" in content
     assert "【确认度】" not in content
     assert "【分类】" not in content
 
@@ -579,8 +604,8 @@ def test_important_monetary_policy_alert_has_specific_market_analysis():
     content = _build_news_alert(item, "重要")
 
     assert "🔔 重要" in content
-    assert "影响：关键在资金与利率预期是否真正改变。" in content
-    assert "接着看：看正式工具、期限和规模，以及资金利率、收益率与金融地产反应。" in content
+    assert "**影响：** 关键在资金与利率预期是否真正改变。" in content
+    assert "**接着看：** 看正式工具、期限和规模，以及资金利率、收益率与金融地产反应。" in content
     assert "【重要性】" not in content
 
 
@@ -599,9 +624,9 @@ def test_important_macro_alert_distinguishes_growth_data_from_policy():
 
     content = _build_news_alert(item, "重要")
 
-    assert "重点：制造业订单改善" in content
-    assert "影响：关键是数据相对预期的变化，而不是单看绝对数。" in content
-    assert "接着看：看预期差、订单库存及资源、汽车与顺周期方向是否确认。" in content
+    assert "**重点：** 制造业订单改善" in content
+    assert "**影响：** 关键是数据相对预期的变化，而不是单看绝对数。" in content
+    assert "**接着看：** 看预期差、订单库存及资源、汽车与顺周期方向是否确认。" in content
 
 
 def test_important_company_alert_does_not_overstate_sector_signal():
@@ -619,9 +644,9 @@ def test_important_company_alert_does_not_overstate_sector_signal():
 
     content = _build_news_alert(item, "重要")
 
-    assert "重点：等待进一步公告" in content
-    assert "影响：先看事项规模、审批条件和财务影响，不直接外推为行业趋势。" in content
-    assert "接着看：看正式公告及新能源、同业是否出现独立确认。" in content
+    assert "**重点：** 等待进一步公告" in content
+    assert "**影响：** 先看事项规模、审批条件和财务影响，不直接外推为行业趋势。" in content
+    assert "**接着看：** 看正式公告及新能源、同业是否出现独立确认。" in content
 
 
 def test_funds_sends_result_to_primary_bot(monkeypatch):
@@ -665,7 +690,8 @@ def test_funds_sends_result_to_primary_bot(monkeypatch):
     assert "资金温度：" in sent_messages[0][0]
     assert "流入且上涨（同向确认）" in sent_messages[0][0]
     assert "相关新闻：" in sent_messages[0][0]
-    assert "怎么看\n资金结论：" in sent_messages[0][0]
+    assert "**解读**\n资金结论：" in sent_messages[0][0]
+    assert "**可信度：**" in sent_messages[0][0]
     assert sent_messages[0][1] == {}
 
 
@@ -731,8 +757,8 @@ def test_periodic_separates_news_facts_from_structured_impact(monkeypatch):
 
     assert len(sent_messages) == 1
     assert "重点新闻：" in sent_messages[0][0]
-    assert "[10:30｜eastmoney] 央行发布最新流动性操作" in sent_messages[0][0]
-    assert "怎么看\n盘中主线：" in sent_messages[0][0]
+    assert "**央行发布最新流动性操作**" in sent_messages[0][0]
+    assert "**解读**\n盘中主线：" in sent_messages[0][0]
 
 
 def test_us_premarket_filters_a_share_only_news_and_sends_us_brief(monkeypatch):
@@ -787,7 +813,7 @@ def test_us_premarket_filters_a_share_only_news_and_sends_us_brief(monkeypatch):
     assert len(sent_messages) == 1
     assert "美股盘前简报" in sent_messages[0][0]
     assert "重点新闻：" in sent_messages[0][0]
-    assert "涉及：半导体" in sent_messages[0][0]
+    assert "**涉及：** 半导体" in sent_messages[0][0]
     assert "SEC 披露｜NVDA｜8-K" in prompts[0]
     assert "A股公司发布日常公告" not in prompts[0]
 
@@ -868,8 +894,8 @@ def test_after_market_separates_news_facts_from_structured_impact(monkeypatch):
 
     assert len(sent_messages) == 1
     assert "重点新闻：" in sent_messages[0][0]
-    assert "[15:00｜eastmoney] 半导体行业发布供需数据" in sent_messages[0][0]
-    assert "怎么看\n收盘结论：" in sent_messages[0][0]
+    assert "**半导体行业发布供需数据**" in sent_messages[0][0]
+    assert "**解读**\n收盘结论：" in sent_messages[0][0]
 
 
 def test_monitor_defers_important_market_news_to_three_hour_summary():
@@ -1926,6 +1952,7 @@ def test_send_tg_adds_a_compact_status_button(monkeypatch):
             [{"text": "📊 状态", "callback_data": "system:status"}]
         ]
     }
+    assert sent_payloads[0]["parse_mode"] == "HTML"
 
 
 def test_interactive_message_keeps_its_actions_and_adds_status_button(monkeypatch):
