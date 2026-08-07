@@ -761,6 +761,43 @@ def test_periodic_separates_news_facts_from_structured_impact(monkeypatch):
     assert "**解读**\n盘中主线：" in sent_messages[0][0]
 
 
+def test_daily_keeps_a_share_facts_when_ai_summary_is_unavailable(monkeypatch):
+    import core.analyzer as analyzer
+    import core.analyzers.daily as daily
+    import core.runtime as runtime
+
+    sent_messages = []
+    news = [
+        {
+            "title": "央行发布最新流动性操作",
+            "digest": "公开市场操作信息",
+            "source": "eastmoney",
+            "time_str": "08:30",
+            "link": "https://example.com/daily",
+            "related_sectors": ["金融"],
+        }
+    ]
+    monkeypatch.setattr(daily, "is_cn_a_share_trading_day", lambda _now: True)
+    monkeypatch.setattr(daily, "get_news", lambda minutes: news)
+    monkeypatch.setattr(
+        analyzer,
+        "_get_ai_response_with_health",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "send_tg",
+        lambda content, **kwargs: sent_messages.append((content, kwargs)) or True,
+    )
+
+    daily.run_daily({})
+
+    assert len(sent_messages) == 1
+    assert "A股盘前简报（AI解读暂不可用）" in sent_messages[0][0]
+    assert "**央行发布最新流动性操作**" in sent_messages[0][0]
+    assert "AI解读：" in sent_messages[0][0]
+
+
 def test_us_premarket_filters_a_share_only_news_and_sends_us_brief(monkeypatch):
     import core.analyzer as analyzer
     import core.analyzers.us_market as us_market

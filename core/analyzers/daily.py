@@ -15,6 +15,7 @@ def run_daily(prompts: dict[str, str]) -> None:
     from core.formatter import (
         _format_links,
         _format_market_message,
+        _format_news_facts,
         _format_news_prompt_line,
         _format_sources,
         format_ai_insight,
@@ -50,24 +51,30 @@ def run_daily(prompts: dict[str, str]) -> None:
         ),
         model="deepseek-reasoner",
     )
+    title = "A股盘前简报"
+    facts = _format_news_facts(news, limit=5)
     if content:
-        _send_tg_with_summary(
-            _format_market_message(
-                "今日市场信息摘要",
-                report_time=now.strftime("%Y-%m-%d %H:%M"),
-                source=_format_sources(news, "东方财富 / RSS"),
-                category="other",
-                importance="medium",
-                summary=format_ai_insight(content),
-                impact="",
-                links=_format_links([item.get("link") for item in news[:5]]),
-                market_scope="A股",
-                related_sectors=[
-                    sector
-                    for item in news[:20]
-                    for sector in item.get("related_sectors", [])
-                ][:6],
-            )
-        )
+        impact = format_ai_insight(content)
     else:
-        _send_health_status("DeepSeek 没有生成有效摘要")
+        _set_run_reason("DeepSeek 没有生成有效摘要", status="partial")
+        title = "A股盘前简报（AI解读暂不可用）"
+        impact = "**AI解读：** 本次暂不可用，以下仅保留可核对新闻事实。"
+
+    _send_tg_with_summary(
+        _format_market_message(
+            title,
+            report_time=now.strftime("%Y-%m-%d %H:%M"),
+            source=_format_sources(news, "东方财富 / RSS"),
+            category="other",
+            importance="medium",
+            summary=f"**重点新闻：**\n{facts}",
+            impact=impact,
+            links=_format_links([item.get("link") for item in news[:5]]),
+            market_scope="A股",
+            related_sectors=[
+                sector
+                for item in news[:20]
+                for sector in item.get("related_sectors", [])
+            ][:6],
+        )
+    )
