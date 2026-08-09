@@ -251,6 +251,23 @@ def test_runtime_returns_nonzero_for_recorded_partial_result(monkeypatch, tmp_pa
         incomplete_run()
 
 
+def test_successful_health_alert_delivery_does_not_hide_run_failure(
+    monkeypatch, tmp_path
+):
+    import core.runtime as runtime
+
+    monkeypatch.setattr(settings, "RUN_STATUS_FILE", str(tmp_path / "latest.json"))
+    monkeypatch.setattr(settings, "RUN_STATUS_DIR", str(tmp_path / "runtime_status"))
+    monkeypatch.setattr(runtime, "CURRENT_RUN_SUMMARY", None)
+    runtime._start_run_summary("monitor")
+    runtime._set_run_summary(data_fetch_success=False, status="failed")
+    monkeypatch.setattr(runtime, "send_tg", lambda *args, **kwargs: True)
+
+    assert runtime._send_tg_with_summary("数据源失败") is True
+    assert runtime._get_run_summary()["status"] == "failed"
+    assert runtime._get_run_summary()["telegram_sent"] is True
+
+
 def test_runtime_metrics_aggregate_modes_and_source_failures(monkeypatch, tmp_path):
     from core.metrics import (
         format_metrics,

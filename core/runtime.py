@@ -217,7 +217,12 @@ def _send_tg_with_summary(content: Any, **kwargs: Any) -> bool:
         _set_run_reason("telegram send failed")
         return False
     summary = _get_run_summary() or {}
-    status = "partial" if summary.get("status") == "partial" else "success"
+    existing_status = summary.get("status")
+    status = (
+        existing_status
+        if existing_status in {"failed", "partial"}
+        else "success"
+    )
     _set_run_summary(telegram_sent=True, status=status)
     return True
 
