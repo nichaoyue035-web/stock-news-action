@@ -105,6 +105,7 @@
 | `STATE_BACKUP_DIR` | SQLite 本地备份目录 | 默认 `STATE_DIR/backups`；每天维护任务生成一个一致性 `.sqlite3` 备份，仍建议将该目录异地复制 |
 | `RUN_STATUS_DIR` | 分模式健康状态目录 | 每个模式独立保存心跳，避免某个无关任务覆盖另一个模式的失败状态 |
 | `HEALTH_REQUIRED_MODES` | 每日健康提醒必须检查的模式 | 默认 `daily,monitor`；逗号分隔，例如 `daily,monitor,radar` |
+| `STATUS_PANEL_MAX_AGE_MINUTES` | 状态面板按模式判定过期的分钟数 | 默认 `daily=4320,monitor=15,telegram_listener=3,source_canary=1560`，避免日报在当天或周末被误判为过期 |
 | `TELEGRAM_FAILURE_ALERTS_ENABLED` | 每次 systemd 失败时立即推送 Telegram | 默认 `false`；失败仍保留在日志、健康心跳和状态面板中 |
 | `CN_MARKET_HOLIDAYS` / `US_MARKET_HOLIDAYS` | 中美交易所例外休市日 | `YYYY-MM-DD` 逗号分隔；周末自动跳过，列出的日期不会被误判为数据失败 |
 | `DB_RETENTION_DAYS` | 监控 SQLite 历史保留天数 | 默认 `30`；只清理过期新闻、报价、已结束候选和告警，活跃追踪不受影响 |
@@ -429,7 +430,7 @@ python main.py metrics monitor
 
 `stock-news-action-source-canary.timer` 每天在 04:45（上海时间）调用真实核心新闻源，不发送 Telegram；核心源异常会使服务以非零状态结束并留下独立 `source_canary` 心跳，供 systemd、指标和日志检查。可选源失败只记录降级，不会把核心信息流误判为不可用。
 
-`stock-news-action-daily-health.timer` 会在每天 08:40（上海时间）向监控 Telegram
+`stock-news-action-daily-health.timer` 会在每个工作日 08:40（上海时间）向监控 Telegram
 频道发送一条健康提醒。它会检查 `HEALTH_REQUIRED_MODES` 中每个模式独立的任务、数据抓取、上轮 Telegram 投递和状态
 文件年龄；只要发现失败、非成功状态或状态超过 `HEALTH_MAX_AGE_MINUTES`，消息会
 标为异常，并让该次 systemd 任务失败，便于在日志中追踪。

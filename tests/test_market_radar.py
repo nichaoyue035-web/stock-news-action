@@ -397,6 +397,35 @@ def test_status_panel_sends_a_refresh_button(monkeypatch, tmp_path):
     assert "🟢 monitor：正常" in calls[0][1]["text"]
 
 
+def test_status_panel_uses_mode_specific_freshness(monkeypatch, tmp_path):
+    from core import telegram_interaction
+    from core.runtime import get_run_status_file
+
+    now = datetime.now(settings.SHA_TZ)
+    monkeypatch.setattr(settings, "RUN_STATUS_DIR", str(tmp_path / "runtime_status"))
+    monkeypatch.setattr(settings, "HEALTH_REQUIRED_MODES", ("daily",))
+    monkeypatch.setattr(
+        settings,
+        "STATUS_PANEL_MAX_AGE_MINUTES",
+        {"daily": 4320, "telegram_listener": 3},
+    )
+    (tmp_path / "runtime_status").mkdir()
+    for mode, finished_at in (
+        ("daily", now - timedelta(hours=12)),
+        ("telegram_listener", now),
+    ):
+        with open(get_run_status_file(mode), "w", encoding="utf-8") as file:
+            json.dump(
+                {"mode": mode, "status": "success", "finished_at": finished_at.isoformat()},
+                file,
+            )
+
+    message = telegram_interaction._format_status_message(now)
+
+    assert "🟢 daily：正常 · 720 分钟前" in message
+    assert "整体：🟢 正常" in message
+
+
 def test_status_button_refreshes_a_current_authorized_status(monkeypatch, tmp_path):
     from core import telegram_interaction
     from core.runtime import get_run_status_file

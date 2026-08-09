@@ -39,11 +39,12 @@ def _status_button_markup() -> dict[str, Any]:
 
 def _health_max_age_seconds(mode: str) -> int:
     try:
-        minutes = int(os.getenv("HEALTH_MAX_AGE_MINUTES", "30"))
+        fallback = int(os.getenv("HEALTH_MAX_AGE_MINUTES", "30"))
     except ValueError:
-        minutes = 30
-    if mode == "telegram_listener":
-        return min(max(1, minutes), 3) * 60
+        fallback = 30
+    minutes = settings.STATUS_PANEL_MAX_AGE_MINUTES.get(
+        str(mode).lower(), max(1, fallback)
+    )
     return max(1, minutes) * 60
 
 

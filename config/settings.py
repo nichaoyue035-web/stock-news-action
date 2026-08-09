@@ -109,6 +109,23 @@ def _parse_integer_list(raw_value):
     return values
 
 
+def _parse_mode_positive_ints(raw_value):
+    """Parse mode=minutes entries, ignoring malformed or non-positive values."""
+    values = {}
+    for item in _parse_rss_url_list(raw_value):
+        mode, separator, raw_minutes = item.partition("=")
+        if not separator:
+            continue
+        try:
+            minutes = int(raw_minutes.strip())
+        except ValueError:
+            continue
+        clean_mode = mode.strip().lower()
+        if clean_mode and minutes > 0:
+            values[clean_mode] = minutes
+    return values
+
+
 # A timer can only express weekdays.  Keep exceptional exchange closures
 # explicit and deployment-owned instead of treating a market holiday as a data
 # failure.  Dates use YYYY-MM-DD and may be separated by English or Chinese
@@ -125,6 +142,15 @@ US_MARKET_HOLIDAYS = frozenset(
 HEALTH_REQUIRED_MODES = tuple(
     mode.lower()
     for mode in _parse_rss_url_list(os.getenv("HEALTH_REQUIRED_MODES", "daily,monitor"))
+)
+# The daily report is expected once per trading day, while monitor and listener
+# heartbeats need minute-level freshness.  This setting is for the Telegram
+# status panel; the daily-health job retains its stricter post-report check.
+STATUS_PANEL_MAX_AGE_MINUTES = _parse_mode_positive_ints(
+    os.getenv(
+        "STATUS_PANEL_MAX_AGE_MINUTES",
+        "daily=4320,monitor=15,telegram_listener=3,source_canary=1560",
+    )
 )
 
 DB_RETENTION_DAYS = _env_positive_int("DB_RETENTION_DAYS", 30)
