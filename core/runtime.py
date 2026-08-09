@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from config import settings
 from core.data_fetcher import get_data_source_health
+from core.source_health import has_critical_source_failure
 from utils.notifier import log_info, send_tg
 
 CURRENT_RUN_SUMMARY: dict[str, Any] | None = None
@@ -36,6 +37,7 @@ def _start_run_summary(mode: str) -> None:
         "telegram_attempted": False,
         "telegram_sent": False,
         "quality": {},
+        "source_health": {},
         "status": None,
         "reason": "",
     }
@@ -75,17 +77,14 @@ def _record_news_summary(news: list[dict[str, Any]]) -> None:
         "news_count": len(news),
         "rss_count": rss_count,
     }
-    source_failed = any(
-        state.get("status") in {"failed", "partial"}
-        for name, state in health.items()
-        if name != "DeepSeek"
-    )
+    source_failed = has_critical_source_failure(health)
     if summary is None or summary.get("data_fetch_success") is None:
         # An empty lookback window is normal for monitor/global modes.  Only a
         # source failure means data fetching itself failed.
         updates["data_fetch_success"] = not source_failed
     if source_failed:
         updates["status"] = "partial"
+    updates["source_health"] = health
     _set_run_summary(**updates)
 
 
@@ -125,6 +124,7 @@ def _print_run_summary() -> None:
         return
 
     summary["status"] = _derive_run_status(summary)
+    summary["source_health"] = get_data_source_health()
     finished_at = datetime.now(settings.SHA_TZ)
     summary["finished_at"] = finished_at.isoformat()
     try:
@@ -162,10 +162,16 @@ def _print_run_summary() -> None:
     record_run_metrics(summary, get_data_source_health())
 
 
-def _persist_run_summary(summary: dict[str, Any]) -> None:
-    """Atomically persist legacy and per-mode, secret-free heartbeats."""
+def _persist_status_summary(
+    summary: dict[str, Any], *, include_legacy_status: bool
+) -> None:
+    """Atomically persist one secret-free heartbeat without overwriting other modes."""
     mode_status_file = get_run_status_file(str(summary.get("mode") or "unknown"))
-    status_files = tuple(dict.fromkeys((settings.RUN_STATUS_FILE, mode_status_file)))
+    status_files = (
+        tuple(dict.fromkeys((settings.RUN_STATUS_FILE, mode_status_file)))
+        if include_legacy_status
+        else (mode_status_file,)
+    )
     for status_file in status_files:
         temp_file = f"{status_file}.{os.getpid()}.tmp"
         try:
@@ -177,6 +183,30 @@ def _persist_run_summary(summary: dict[str, Any]) -> None:
             os.replace(temp_file, status_file)
         except OSError as exc:
             log_info(f"运行状态保存失败: {exc.__class__.__name__}")
+
+
+def _persist_run_summary(summary: dict[str, Any]) -> None:
+    """Atomically persist legacy and per-mode task heartbeats."""
+    _persist_status_summary(summary, include_legacy_status=True)
+
+
+def write_service_heartbeat(
+    mode: str, *, status: str = "success", reason: str = ""
+) -> None:
+    """Persist a heartbeat for a long-running auxiliary service."""
+    now = datetime.now(settings.SHA_TZ).isoformat()
+    _persist_status_summary(
+        {
+            "mode": mode,
+            "started_at": now,
+            "finished_at": now,
+            "duration_seconds": 0,
+            "service_heartbeat": True,
+            "status": status,
+            "reason": str(reason or "").strip(),
+        },
+        include_legacy_status=False,
+    )
 
 
 def _with_run_summary(mode_value: str | Callable[..., str]):
@@ -233,7 +263,9 @@ def _print_monitor_filter_summary(
     after_time_filter: int,
     after_keyword_filter: int,
     after_dedup: int,
-    final_alert_items: int,
+    market_alert_items: int,
+    health_alert_items: int,
+    tracking_items: int,
     decision: str,
     reason: str = "",
 ) -> None:
@@ -243,7 +275,9 @@ def _print_monitor_filter_summary(
     print(f"after_time_filter={after_time_filter}", flush=True)
     print(f"after_keyword_filter={after_keyword_filter}", flush=True)
     print(f"after_dedup={after_dedup}", flush=True)
-    print(f"final_alert_items={final_alert_items}", flush=True)
+    print(f"market_alert_items={market_alert_items}", flush=True)
+    print(f"health_alert_items={health_alert_items}", flush=True)
+    print(f"tracking_items={tracking_items}", flush=True)
     print(f"decision={decision}", flush=True)
     if reason:
         print(f"reason={reason}", flush=True)

@@ -9,6 +9,39 @@ from utils.safety import redact_sensitive_text
 
 DATA_SOURCE_HEALTH: dict[str, dict[str, Any]] = {}
 
+# A failed optional discovery or enrichment source must remain visible without
+# declaring the entire market-monitoring pipeline unavailable.  Sources not in
+# this set are deliberately treated as optional until they are promoted through
+# an explicit production decision.
+CORE_SOURCE_NAMES = frozenset(
+    {
+        "东方财富快讯",
+        "海外 RSS",
+        "新闻合并处理",
+        "资金流数据",
+        "热门股数据",
+        "个股行情",
+        "历史行情",
+        "Polygon 美股行情",
+        "Polygon 美股新闻",
+    }
+)
+
+
+def source_criticality(name: str) -> str:
+    """Return the operational importance assigned to one named source."""
+    return "core" if str(name) in CORE_SOURCE_NAMES else "optional"
+
+
+def has_critical_source_failure(health: dict[str, dict[str, Any]]) -> bool:
+    """Return whether a failed source makes the current task materially degraded."""
+    return any(
+        state.get("criticality", source_criticality(name)) == "core"
+        and state.get("status") in {"failed", "partial"}
+        for name, state in health.items()
+        if isinstance(state, dict)
+    )
+
 
 def redact_error_detail(text: Any) -> str:
     """Return a short error detail without leaking configured secrets."""
@@ -28,6 +61,7 @@ def record_data_source_health(
         "status": status,
         "detail": redact_error_detail(detail),
         "count": count,
+        "criticality": source_criticality(name),
     }
 
 

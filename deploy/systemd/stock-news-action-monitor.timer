@@ -5,7 +5,7 @@ Description=Run stock-news black-swan monitor every five minutes
 OnCalendar=*-*-* *:0/5:00
 Persistent=true
 RandomizedDelaySec=15
-Unit=stock-news@monitor.service
+Unit=stock-news-action@monitor.service
 
 [Install]
 WantedBy=timers.target

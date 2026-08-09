@@ -135,6 +135,14 @@ def run_track() -> None:
     _run_track()
 
 
+@_with_run_summary("source_canary")
+def run_source_canary() -> None:
+    """Probe live core news providers without producing a Telegram message."""
+    from core.analyzers.source_canary import run_source_canary as _run_source_canary
+
+    _run_source_canary()
+
+
 @_with_run_summary(lambda mode: mode)
 def run_analysis(mode: str) -> None:
     reset_data_source_health()

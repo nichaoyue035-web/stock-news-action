@@ -61,6 +61,7 @@
 | `track` | 跟踪已选观察标的 | 读取 `stock_pick.json` 中的标的，获取最新行情并生成简短跟踪观点 |
 | `review` | 历史表现回看 | 读取 `history.csv`，按 T+1、T+5、T+20 交易日统一计算正收益占比和平均收益 |
 | `daily_health` | VPS 每日健康提醒 | 向监控 Telegram 频道推送最近一次任务状态；失败、异常或状态过期会明确标红 |
+| `source_canary` | 核心源烟囱检查 | 只探测真实新闻源并写入健康心跳；不调用 AI、不发送 Telegram，用于确认外部数据链路仍可用 |
 | `maintenance` | 状态库维护 | 清理过期新闻、报价、候选和告警，并生成一个本地 SQLite 一致性备份 |
 | `telegram_listener` | 雷达交互监听服务 | 常驻接收雷达消息按钮，用于延长或停止已自动开始的追踪 |
 | `status_panel` | 监控状态面板 | 向监控 Telegram 频道发送可置顶的“📊 状态”按钮 |
@@ -100,7 +101,7 @@
 | `PRICE_ALERT_COOLDOWN_MINUTES` | 同一股票同方向异动的提醒冷却时间 | `monitor` 行情通道；默认 `15` 分钟 |
 | `PRICE_ALERT_MAX_COMPARISON_GAP_MINUTES` | 允许与上一笔行情采样比较的最大间隔 | `monitor` 行情通道；默认 `6` 分钟，匹配五分钟定时器及其抖动，并避免服务中断后误报 |
 | `SWING_*` | A 股中期观察筛选条件 | `swing`；默认收盘后按 20/60 日趋势、近 5 日不过热、成交量与近三日公司相关信息筛选，观察期 45 天 |
-| `STATE_DIR` | 持久化运行与观察状态目录 | VPS 建议 `/var/lib/stock-news-action`；未设置时仍使用仓库目录，`recommend/track/review` 的状态会一并保存到这里 |
+| `STATE_DIR` | 持久化运行与观察状态目录 | VPS 使用 `/var/lib/stock-news-action`；本地未设置时使用被忽略的 `.state/`，不会污染代码工作区 |
 | `STATE_BACKUP_DIR` | SQLite 本地备份目录 | 默认 `STATE_DIR/backups`；每天维护任务生成一个一致性 `.sqlite3` 备份，仍建议将该目录异地复制 |
 | `RUN_STATUS_DIR` | 分模式健康状态目录 | 每个模式独立保存心跳，避免某个无关任务覆盖另一个模式的失败状态 |
 | `HEALTH_REQUIRED_MODES` | 每日健康提醒必须检查的模式 | 默认 `daily,monitor`；逗号分隔，例如 `daily,monitor,radar` |
@@ -228,10 +229,8 @@ python main.py monitor
 
 GitHub Actions 更适合作为手动回退或日常任务，不应作为此监控的生产调度器。
 
-`global` 应只在 VPS 上每三小时运行一次。可使用
-`deploy/systemd/stock-news-global.timer`；若服务器使用
-`stock-news-action@.service` 模板，将其 `Unit=` 改为
-`stock-news-action@global.service` 后启用。GitHub Actions 不保留该任务，避免与 VPS 重复推送。
+`global` 应只在 VPS 上每三小时运行一次，使用
+`deploy/systemd/stock-news-action-global.timer`。GitHub Actions 不保留该任务，避免与 VPS 重复推送。
 
 如果缺少必要环境变量，程序会在启动时提示缺少哪些 Secrets。
 
@@ -383,37 +382,38 @@ python main.py daily
 
 ## 11. VPS 生产调度与健康检查
 
-GitHub Actions 只保留代码测试；所有 Telegram 生产推送都由 VPS 承担。仓库提供
-`deploy/systemd/` 示例，避免生产调度只存在于服务器的手工配置中。
-
-建议部署目录和专用用户：
+GitHub Actions 只保留代码测试；所有 Telegram 生产推送都由 VPS 承担。`deploy/systemd/`
+是当前 VPS 的唯一 systemd 配置来源：使用 `ec2-user`、
+`/home/ec2-user/apps/stock-news-action` 和
+`/home/ec2-user/.config/stock-news-action/environment`。
 
 ```bash
-sudo useradd --system --home /opt/stock-news-action --shell /usr/sbin/nologin stockbot
-sudo cp deploy/systemd/* /etc/systemd/system/
-sudo cp deploy/stock-news-action.env.example /etc/stock-news-action.env
-sudo chmod 600 /etc/stock-news-action.env
+mkdir -p /home/ec2-user/.config/stock-news-action
+cp deploy/stock-news-action.env.example /home/ec2-user/.config/stock-news-action/environment
+chmod 600 /home/ec2-user/.config/stock-news-action/environment
+sudo install -m 644 deploy/systemd/*.service deploy/systemd/*.timer /etc/systemd/system/
 ```
 
-编辑 `/etc/stock-news-action.env`，填入真实 Secrets。不要把修改后的文件提交到仓库。
+编辑 `/home/ec2-user/.config/stock-news-action/environment`，填入真实 Secrets。不要把修改后的文件提交到仓库。
 然后启用需要的定时器：
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now stock-news-monitor.timer
-sudo systemctl enable --now stock-news-daily.timer
-sudo systemctl enable --now stock-news-periodic.timer
-sudo systemctl enable --now stock-news-us-premarket.timer
-sudo systemctl enable --now stock-news-us-periodic.timer
-sudo systemctl enable --now stock-news-after-market.timer
-sudo systemctl enable --now stock-news-funds.timer
-sudo systemctl enable --now stock-news-daily-health.timer
-sudo systemctl enable --now stock-news-radar.timer
-sudo systemctl enable --now stock-news-swing.timer
-sudo systemctl enable --now stock-news-swing-review.timer
-sudo systemctl enable --now stock-news-maintenance.timer
-sudo systemctl enable --now stock-news-interaction.service
-systemctl list-timers 'stock-news-*'
+sudo systemctl enable --now stock-news-action-monitor.timer
+sudo systemctl enable --now stock-news-action-daily.timer
+sudo systemctl enable --now stock-news-action-periodic.timer
+sudo systemctl enable --now stock-news-action-us-premarket.timer
+sudo systemctl enable --now stock-news-action-us-periodic.timer
+sudo systemctl enable --now stock-news-action-after-market.timer
+sudo systemctl enable --now stock-news-action-funds.timer
+sudo systemctl enable --now stock-news-action-daily-health.timer
+sudo systemctl enable --now stock-news-action-radar.timer
+sudo systemctl enable --now stock-news-action-swing.timer
+sudo systemctl enable --now stock-news-action-swing-review.timer
+sudo systemctl enable --now stock-news-action-maintenance.timer
+sudo systemctl enable --now stock-news-action-source-canary.timer
+sudo systemctl enable --now stock-news-action-interaction.service
+systemctl list-timers 'stock-news-action-*'
 ```
 
 每次任务结束都会原子写入兼容的 `RUN_STATUS_FILE`，并在 `RUN_STATUS_DIR` 写入该模式独立的状态文件。以下命令会输出最近一次运行摘要；也可指定模式。失败、状态文件损坏或超过 `HEALTH_MAX_AGE_MINUTES` 时命令返回非零状态：
@@ -425,41 +425,35 @@ python main.py metrics
 python main.py metrics monitor
 ```
 
-`metrics` 会汇总每种任务的成功、部分完成、失败、投递失败次数及最近异常数据源；它只保存运行状态与计数，不保存密钥或消息正文。指标写入 `METRICS_FILE`，与心跳文件一起放在持久化目录中。
+`metrics` 会分别汇总市场提醒、系统告警、跟踪更新和投递失败，以及最近异常数据源；它只保存运行状态与计数，不保存密钥或消息正文。指标写入 `METRICS_FILE`，与心跳文件一起放在持久化目录中。
 
-`stock-news-daily-health.timer` 会在每天 08:40（上海时间）向监控 Telegram
+`stock-news-action-source-canary.timer` 每天在 04:45（上海时间）调用真实核心新闻源，不发送 Telegram；核心源异常会使服务以非零状态结束并留下独立 `source_canary` 心跳，供 systemd、指标和日志检查。可选源失败只记录降级，不会把核心信息流误判为不可用。
+
+`stock-news-action-daily-health.timer` 会在每天 08:40（上海时间）向监控 Telegram
 频道发送一条健康提醒。它会检查 `HEALTH_REQUIRED_MODES` 中每个模式独立的任务、数据抓取、上轮 Telegram 投递和状态
 文件年龄；只要发现失败、非成功状态或状态超过 `HEALTH_MAX_AGE_MINUTES`，消息会
 标为异常，并让该次 systemd 任务失败，便于在日志中追踪。
 
-如果服务器已经使用了不同前缀的模板服务（例如
-`stock-news-action@.service`），则每日健康定时器也必须使用相同前缀：将其
-`Unit=` 改为 `stock-news-action@daily_health.service`，并以
-`stock-news-action-daily-health.timer` 的名称启用。
+`stock-news-action-funds.timer` 会在每个工作日上海时间 15:10 运行主力资金雷达，使用现有的 `TG_BOT_TOKEN` 和 `TG_CHAT_ID`。
 
-`stock-news-funds.timer` 会在每个工作日上海时间 15:10 运行主力资金雷达。若服务器
-使用 `stock-news-action@.service` 模板，定时器也必须使用相同前缀：将 `Unit=` 改为
-`stock-news-action@funds.service`，并以 `stock-news-action-funds.timer` 的名称启用。
-资金雷达会使用现有的 `TG_BOT_TOKEN` 和 `TG_CHAT_ID`。
-
-所有 `stock-news@*.service` 及交互监听服务失败时，systemd 会触发
-`stock-news-failure@.service`。为避免部分完成或短暂服务失败反复打扰，默认不会立即发送
+所有 `stock-news-action@*.service` 及交互监听服务失败时，systemd 会触发
+`stock-news-action-failure@.service`。为避免部分完成或短暂服务失败反复打扰，默认不会立即发送
 Telegram；故障仍会保留在 systemd journal、独立健康心跳和每日健康提醒中。若确实需要每次
 立即通知，可在服务器环境文件中设置 `TELEGRAM_FAILURE_ALERTS_ENABLED=true`。生产环境仍建议把
 `STATE_BACKUP_DIR` 异地同步，并接入独立于 Telegram 的主机监控。
 
 ### 监控状态按钮
 
-保持 `stock-news-interaction.service` 运行后，执行一次以下命令，会在监控 Telegram 频道
+保持 `stock-news-action-interaction.service` 运行后，执行一次以下命令，会在监控 Telegram 频道
 发送带“📊 状态”按钮的消息；将该消息置顶即可作为一键入口。每条程序推送也会附带同一个紧凑按钮，
 而雷达、事件追踪等原有按钮会保留：
 
 ```bash
-sudo -u stockbot /opt/stock-news-action/.venv/bin/python /opt/stock-news-action/main.py status_panel
+sudo -u ec2-user /home/ec2-user/apps/stock-news-action/.venv/bin/python /home/ec2-user/apps/stock-news-action/main.py status_panel
 ```
 
-点击按钮会读取 `HEALTH_REQUIRED_MODES` 中每个模式最近一次运行的独立心跳，显示正常、部分
-完成、失败或状态过期。群聊中只有 `TG_INTERACTION_ALLOWED_USER_IDS` 允许的账号能刷新。
+点击按钮会读取 `HEALTH_REQUIRED_MODES` 中每个模式和 Telegram 交互监听服务的独立心跳，显示正常、部分
+完成、失败或状态过期；关键数据源异常和可选数据源降级会分别显示。群聊中只有 `TG_INTERACTION_ALLOWED_USER_IDS` 允许的账号能刷新。
 
 市场监控的“紧急市场提醒”使用紧凑格式：先给事件与关键事实，再只指出一个最关键的
 市场含义和一个应核对的变量。三小时市场总结按政策、宏观、资金、行业、公司或海外类别

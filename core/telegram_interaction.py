@@ -18,7 +18,8 @@ from core.analyzers.monitor import (
 )
 from core.radar import handle_radar_callback
 from core.radar_store import RadarStore
-from core.runtime import get_run_status_file
+from core.runtime import get_run_status_file, write_service_heartbeat
+from core.source_health import source_criticality
 from utils.safety import redact_sensitive_text
 from utils.notifier import (
     STATUS_CALLBACK_DATA,
@@ -36,20 +37,26 @@ def _status_button_markup() -> dict[str, Any]:
     return status_button_markup()
 
 
-def _health_max_age_seconds() -> int:
+def _health_max_age_seconds(mode: str) -> int:
     try:
         minutes = int(os.getenv("HEALTH_MAX_AGE_MINUTES", "30"))
     except ValueError:
         minutes = 30
+    if mode == "telegram_listener":
+        return min(max(1, minutes), 3) * 60
     return max(1, minutes) * 60
 
 
 def _format_status_message(now: datetime | None = None) -> str:
     """Format secret-free per-mode heartbeats for the monitoring chat."""
     now = now or datetime.now(settings.SHA_TZ)
-    modes = settings.HEALTH_REQUIRED_MODES or ("daily", "monitor")
+    configured_modes = settings.HEALTH_REQUIRED_MODES or ("daily", "monitor")
+    modes = tuple(
+        dict.fromkeys((*configured_modes, "telegram_listener"))
+    )
     lines = [f"📊 监控状态 · {now.strftime('%Y-%m-%d %H:%M')}"]
     all_healthy = True
+    optional_degraded = False
 
     for mode in modes:
         try:
@@ -67,7 +74,7 @@ def _format_status_message(now: datetime | None = None) -> str:
             continue
 
         status_value = str(status.get("status") or "未知")
-        if age_seconds > _health_max_age_seconds():
+        if age_seconds > _health_max_age_seconds(mode):
             icon, label = "🟠", "状态过期"
             all_healthy = False
         elif status_value == "success":
@@ -81,8 +88,37 @@ def _format_status_message(now: datetime | None = None) -> str:
         lines.append(f"{icon} {mode}：{label} · {age_seconds / 60:.0f} 分钟前")
         if status.get("reason"):
             lines.append(f"  原因：{redact_sensitive_text(status['reason'])}")
+        source_health = status.get("source_health")
+        if isinstance(source_health, dict):
+            failed_core = []
+            failed_optional = []
+            for name, state in source_health.items():
+                if (
+                    not isinstance(state, dict)
+                    or state.get("status") not in {"failed", "partial"}
+                ):
+                    continue
+                target = (
+                    failed_core
+                    if state.get("criticality", source_criticality(str(name))) == "core"
+                    else failed_optional
+                )
+                target.append(str(name))
+            if failed_core:
+                lines.append(f"  关键源异常：{', '.join(failed_core[:3])}")
+                all_healthy = False
+            if failed_optional:
+                lines.append(f"  可选源降级：{', '.join(failed_optional[:3])}")
+                optional_degraded = True
 
-    lines.insert(1, "整体：🟢 正常" if all_healthy else "整体：🔴 需要检查")
+    overall = (
+        "整体：🔴 需要检查"
+        if not all_healthy
+        else "整体：🟡 可选源降级"
+        if optional_degraded
+        else "整体：🟢 正常"
+    )
+    lines.insert(1, overall)
     lines.append("说明：即时失败提醒默认静默；详情仍保留在服务日志和此状态面板。")
     return "\n".join(lines)
 
@@ -269,6 +305,7 @@ def run_telegram_listener() -> None:
     store = RadarStore(settings.MONITOR_DB_FILE)
     store.initialize()
     log_info("Telegram 标的与事件交互监听已启动")
+    write_service_heartbeat("telegram_listener")
     while True:
         polling_failed = False
         for state_key, token in targets:
@@ -305,5 +342,10 @@ def run_telegram_listener() -> None:
                         )
                     except (TypeError, ValueError):
                         log_error("❌ Telegram update_id 格式异常，未写入监听游标")
+        write_service_heartbeat(
+            "telegram_listener",
+            status="partial" if polling_failed else "success",
+            reason="Telegram polling failed" if polling_failed else "",
+        )
         if polling_failed:
             time.sleep(5)

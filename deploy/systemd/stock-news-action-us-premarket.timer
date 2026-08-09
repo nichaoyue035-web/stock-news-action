@@ -4,7 +4,7 @@ Description=Run stock-news US premarket brief
 [Timer]
 OnCalendar=Mon..Fri *-*-* 08:45:00 America/New_York
 Persistent=false
-Unit=stock-news@us_premarket.service
+Unit=stock-news-action@us_premarket.service
 
 [Install]
 WantedBy=timers.target

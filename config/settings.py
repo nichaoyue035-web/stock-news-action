@@ -7,9 +7,10 @@ SHA_TZ = timezone(timedelta(hours=8), "Asia/Shanghai")
 US_EASTERN_TZ = ZoneInfo("America/New_York")
 
 # Stateful production files must be able to live outside a replaceable checkout.
-# Local development keeps the historical repository-relative defaults.
+# Local development keeps them in an ignored directory instead of modifying the
+# repository's tracked sample files.
 STATE_DIR = os.getenv("STATE_DIR", "").strip()
-_STATE_BASE_DIR = STATE_DIR or BASE_DIR
+_STATE_BASE_DIR = STATE_DIR or os.path.join(BASE_DIR, ".state")
 
 # 1. 主机器人
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")

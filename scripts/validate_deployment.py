@@ -63,9 +63,9 @@ def validate_systemd_units(systemd_dir: Path = SYSTEMD_DIR) -> list[str]:
     known_files = {path.name for path in [*unit_paths, *timer_paths]}
 
     protected_services = {
-        "stock-news@.service": True,
-        "stock-news-interaction.service": True,
-        "stock-news-failure@.service": False,
+        "stock-news-action@.service": True,
+        "stock-news-action-interaction.service": True,
+        "stock-news-action-failure@.service": False,
     }
     for unit_name, requires_failure_hook in protected_services.items():
         path = systemd_dir / unit_name
@@ -74,14 +74,17 @@ def validate_systemd_units(systemd_dir: Path = SYSTEMD_DIR) -> list[str]:
             continue
         values = _read_unit(path)
         for key, expected in (
-            ("User", "stockbot"),
-            ("WorkingDirectory", "/opt/stock-news-action"),
-            ("EnvironmentFile", "/etc/stock-news-action.env"),
+            ("User", "ec2-user"),
+            ("Group", "ec2-user"),
+            ("WorkingDirectory", "/home/ec2-user/apps/stock-news-action"),
+            ("EnvironmentFile", "/home/ec2-user/.config/stock-news-action/environment"),
+            ("Environment", "PYTHONUNBUFFERED=1"),
+            ("Environment", "STATE_DIR=/var/lib/stock-news-action"),
             ("UMask", "0077"),
-            ("ExecStart", "main.py"),
+            ("ExecStart", "/home/ec2-user/apps/stock-news-action/main.py"),
         ):
             _require(errors, unit_name, values, "Service", key, expected)
-        if unit_name != "stock-news-failure@.service":
+        if unit_name != "stock-news-action-failure@.service":
             _require(errors, unit_name, values, "Service", "StateDirectory", "stock-news-action")
         if requires_failure_hook:
             _require(
@@ -90,7 +93,7 @@ def validate_systemd_units(systemd_dir: Path = SYSTEMD_DIR) -> list[str]:
                 values,
                 "Unit",
                 "OnFailure",
-                "stock-news-failure@%n.service",
+                "stock-news-action-failure@%n.service",
             )
 
     for path in timer_paths:

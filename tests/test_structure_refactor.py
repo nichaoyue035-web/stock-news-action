@@ -237,6 +237,89 @@ def test_runtime_marks_empty_healthy_news_window_as_success(monkeypatch):
     assert runtime._get_run_summary()["data_fetch_success"] is True
 
 
+def test_runtime_keeps_optional_source_failure_out_of_core_health(monkeypatch):
+    import core.runtime as runtime
+    from core.data_fetcher import record_data_source_health, reset_data_source_health
+
+    reset_data_source_health()
+    record_data_source_health("东方财富快讯", "success", "", 0)
+    record_data_source_health("海外 RSS", "success", "", 0)
+    record_data_source_health("Truth Social（特朗普）", "failed", "HTTP 403", 0)
+    monkeypatch.setattr(runtime, "CURRENT_RUN_SUMMARY", None)
+    runtime._start_run_summary("monitor")
+
+    runtime._record_news_summary([])
+
+    summary = runtime._get_run_summary()
+    assert summary["data_fetch_success"] is True
+    assert summary["status"] is None
+    assert summary["source_health"]["Truth Social（特朗普）"]["criticality"] == "optional"
+
+
+def test_runtime_marks_core_source_failure_as_partial(monkeypatch):
+    import core.runtime as runtime
+    from core.data_fetcher import record_data_source_health, reset_data_source_health
+
+    reset_data_source_health()
+    record_data_source_health("东方财富快讯", "failed", "HTTP 500", 0)
+    monkeypatch.setattr(runtime, "CURRENT_RUN_SUMMARY", None)
+    runtime._start_run_summary("monitor")
+
+    runtime._record_news_summary([])
+
+    summary = runtime._get_run_summary()
+    assert summary["data_fetch_success"] is False
+    assert summary["status"] == "partial"
+
+
+def test_service_heartbeat_writes_only_its_mode_file(monkeypatch, tmp_path):
+    import core.runtime as runtime
+
+    legacy_status = tmp_path / "latest.json"
+    monkeypatch.setattr(settings, "RUN_STATUS_FILE", str(legacy_status))
+    monkeypatch.setattr(settings, "RUN_STATUS_DIR", str(tmp_path / "runtime_status"))
+
+    runtime.write_service_heartbeat("telegram_listener", status="success")
+
+    heartbeat = json.loads(
+        Path(runtime.get_run_status_file("telegram_listener")).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert heartbeat["service_heartbeat"] is True
+    assert heartbeat["status"] == "success"
+    assert not legacy_status.exists()
+
+
+def test_source_canary_records_live_source_health_without_telegram(
+    monkeypatch, tmp_path
+):
+    import core.analyzer as analyzer
+    import core.analyzers.source_canary as source_canary
+    import core.runtime as runtime
+    from core.data_fetcher import record_data_source_health
+
+    monkeypatch.setattr(settings, "RUN_STATUS_FILE", str(tmp_path / "latest.json"))
+    monkeypatch.setattr(settings, "RUN_STATUS_DIR", str(tmp_path / "runtime_status"))
+
+    def fake_get_news(*args, **kwargs):
+        record_data_source_health("东方财富快讯", "success", "", 0)
+        record_data_source_health("海外 RSS", "success", "", 0)
+        return []
+
+    monkeypatch.setattr(source_canary, "get_news", fake_get_news)
+    monkeypatch.setattr(runtime, "CURRENT_RUN_SUMMARY", None)
+
+    analyzer.run_source_canary()
+
+    status = json.loads(
+        Path(runtime.get_run_status_file("source_canary")).read_text(encoding="utf-8")
+    )
+    assert status["status"] == "success"
+    assert status["telegram_attempted"] is False
+    assert status["source_health"]["东方财富快讯"]["criticality"] == "core"
+
+
 def test_runtime_returns_nonzero_for_recorded_partial_result(monkeypatch, tmp_path):
     import core.runtime as runtime
 
@@ -334,10 +417,10 @@ def test_failure_alert_uses_the_other_configured_telegram_channel(monkeypatch):
         lambda content, **kwargs: sent.append((content, kwargs)) or True,
     )
 
-    failure_notifier.send_failure_alert("stock-news@monitor.service")
+    failure_notifier.send_failure_alert("stock-news-action@monitor.service")
 
     assert sent[0][1] == {"token": "primary-token", "chat_id": "primary-chat"}
-    assert "stock-news@monitor.service" in sent[0][0]
+    assert "stock-news-action@monitor.service" in sent[0][0]
 
 
 def test_failure_alert_is_silent_by_default(monkeypatch):
@@ -351,7 +434,7 @@ def test_failure_alert_is_silent_by_default(monkeypatch):
         lambda content, **kwargs: sent.append((content, kwargs)) or True,
     )
 
-    failure_notifier.send_failure_alert("stock-news@monitor.service")
+    failure_notifier.send_failure_alert("stock-news-action@monitor.service")
 
     assert sent == []
 
@@ -876,6 +959,7 @@ def test_us_premarket_filters_a_share_only_news_and_sends_us_brief(monkeypatch):
         },
     ]
     monkeypatch.setattr(us_market, "get_news", lambda minutes: news)
+    monkeypatch.setattr(us_market, "is_us_equity_trading_day", lambda _now: True)
     monkeypatch.setattr(
         analyzer,
         "_get_ai_response_with_health",

@@ -4,7 +4,7 @@ Description=Run stock-news daily report on A-share trading days
 [Timer]
 OnCalendar=Mon..Fri *-*-* 08:30:00 Asia/Shanghai
 Persistent=true
-Unit=stock-news@daily.service
+Unit=stock-news-action@daily.service
 
 [Install]
 WantedBy=timers.target

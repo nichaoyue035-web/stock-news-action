@@ -259,6 +259,11 @@ def main() -> None:
 
         run_maintenance()
         return
+    if mode == "source_canary":
+        from core.analyzer import run_source_canary
+
+        run_source_canary()
+        return
     if mode == "failure":
         from core.failure_notifier import send_failure_alert
 

@@ -4,7 +4,7 @@ Description=Review A-share medium-term observation win rate weekly
 [Timer]
 OnCalendar=Fri *-*-* 15:40:00 Asia/Shanghai
 Persistent=true
-Unit=stock-news@swing_review.service
+Unit=stock-news-action@swing_review.service
 
 [Install]
 WantedBy=timers.target

@@ -4,7 +4,7 @@ Description=Send stock-news VPS daily health reminder
 [Timer]
 OnCalendar=*-*-* 08:40:00 Asia/Shanghai
 Persistent=true
-Unit=stock-news@daily_health.service
+Unit=stock-news-action@daily_health.service
 
 [Install]
 WantedBy=timers.target

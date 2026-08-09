@@ -1,0 +1,15 @@
+[Unit]
+Description=Send stock-news failure alert for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/home/ec2-user/apps/stock-news-action
+EnvironmentFile=/home/ec2-user/.config/stock-news-action/environment
+Environment=PYTHONUNBUFFERED=1
+Environment=STATE_DIR=/var/lib/stock-news-action
+UMask=0077
+ExecStart=/home/ec2-user/apps/stock-news-action/.venv/bin/python /home/ec2-user/apps/stock-news-action/main.py failure %i

@@ -4,7 +4,7 @@ Description=Run stock-news three-hour market summary
 [Timer]
 OnCalendar=*-*-* 00/3:10:00 Asia/Shanghai
 Persistent=false
-Unit=stock-news@global.service
+Unit=stock-news-action@global.service
 
 [Install]
 WantedBy=timers.target

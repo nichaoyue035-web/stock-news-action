@@ -18,6 +18,7 @@ from core.analyzers.monitor_tracking import (
 )
 from core.data_fetcher import get_data_source_health, get_news, get_stock_quote
 from core.monitor_store import MonitorStore, news_event_key
+from core.source_health import has_critical_source_failure
 from utils.notifier import log_info, send_tg_interactive
 
 # Compatibility exports: callers keep importing monitor helpers from this facade.
@@ -264,7 +265,7 @@ def _run_monitor_cycle(
     health_sent = 0
     if not news:
         health = get_data_source_health()
-        if any(state.get("status") == "failed" for state in health.values()):
+        if has_critical_source_failure(health):
             health_sent = int(
                 _send_monitor_health_alert(store, "新闻数据源没有返回可用内容", now)
             )
@@ -272,14 +273,19 @@ def _run_monitor_cycle(
             log_info("新闻监控无新快讯，跳过推送")
 
     quote_count, sent_price = _run_watchlist_monitor(store, now)
-    sent_total = sent_news + sent_price + health_sent + tracking_updates + tracking_ended
+    market_alerts_sent = sent_news + sent_price
+    sent_total = market_alerts_sent + health_sent + tracking_updates + tracking_ended
     _record_quality_counts(
         input_items=input_items,
         timely_items=after_time_filter,
         eligible_items=len(eligible_news),
         new_items=recorded_news,
         duplicate_alerts_suppressed=suppressed_duplicates,
-        alerts_sent=sent_total,
+        market_alerts_sent=market_alerts_sent,
+        health_alerts_sent=health_sent,
+        tracking_updates_sent=tracking_updates,
+        tracking_endings_sent=tracking_ended,
+        notifications_sent=sent_total,
         quote_samples=quote_count,
     )
     _print_monitor_filter_summary(
@@ -287,13 +293,16 @@ def _run_monitor_cycle(
         after_time_filter=after_time_filter,
         after_keyword_filter=len(eligible_news),
         after_dedup=recorded_news,
-        final_alert_items=sent_total,
+        market_alert_items=market_alerts_sent,
+        health_alert_items=health_sent,
+        tracking_items=tracking_updates + tracking_ended,
         decision="send" if sent_total else "skip",
         reason=(
             "no new eligible news or watchlist price signal"
             if not sent_total
             else (
                 f"news_sent={sent_news}, news_dedup_suppressed={suppressed_duplicates}, "
+                f"health_sent={health_sent}, "
                 f"tracking_updates={tracking_updates}, tracking_ended={tracking_ended}, "
                 f"quote_samples={quote_count}, price_sent={sent_price}"
             )
