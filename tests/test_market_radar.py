@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 
 from config import settings
@@ -15,6 +16,7 @@ def _a_share_time() -> datetime:
 def _make_store(tmp_path, monkeypatch) -> RadarStore:
     database = tmp_path / "radar.db"
     monkeypatch.setattr(settings, "MONITOR_DB_FILE", str(database))
+    monkeypatch.setattr(settings, "METRICS_FILE", str(tmp_path / "metrics.json"))
     store = RadarStore(str(database))
     store.initialize()
     return store
@@ -50,8 +52,8 @@ def test_a_share_radar_creates_candidate_only_after_a_quote_baseline(
     )
     monkeypatch.setattr(settings, "RADAR_A_SHARE_CODES", ["000001"])
     monkeypatch.setattr(settings, "RADAR_A_SHARE_MINUTE_CHANGE_PCT", 1.5)
-    monkeypatch.setattr(settings, "INTERACTION_BOT_TOKEN", "token")
-    monkeypatch.setattr(settings, "INTERACTION_CHAT_ID", "123")
+    monkeypatch.setattr(settings, "RADAR_INTERACTION_BOT_TOKEN", "token")
+    monkeypatch.setattr(settings, "RADAR_INTERACTION_CHAT_ID", "123")
     monkeypatch.setattr(radar, "get_stock_quote", lambda code: next(quotes))
     monkeypatch.setattr(radar, "send_tg_interactive", lambda *args, **kwargs: 456)
 
@@ -64,12 +66,225 @@ def test_a_share_radar_creates_candidate_only_after_a_quote_baseline(
     assert candidates[0]["attributes"]["signal"] == "盘中快速上涨"
 
 
+def test_radar_candidate_uses_the_primary_observation_bot(monkeypatch, tmp_path):
+    store = _make_store(tmp_path, monkeypatch)
+    now = _a_share_time()
+    candidate = _create_candidate(store, now)
+    sent = []
+    monkeypatch.setattr(settings, "RADAR_INTERACTION_BOT_TOKEN", "primary-token")
+    monkeypatch.setattr(settings, "RADAR_INTERACTION_CHAT_ID", "primary-chat")
+    monkeypatch.setattr(
+        radar,
+        "send_tg_interactive",
+        lambda *args, **kwargs: sent.append(kwargs) or 789,
+    )
+
+    assert radar._send_candidate(candidate, store, now) is True
+    assert len(sent) == 1
+    assert sent[0]["token"] == "primary-token"
+    assert sent[0]["chat_id"] == "primary-chat"
+    assert store.get_candidate(candidate["candidate_id"])["telegram_chat_id"] == "primary-chat"
+
+
+def test_radar_sends_one_confirmed_candidate_per_market_session(monkeypatch, tmp_path):
+    store = _make_store(tmp_path, monkeypatch)
+    now = _a_share_time()
+    create_kwargs = {
+        "market": "CN",
+        "symbol": "000001",
+        "name": "测试股",
+        "price": 10.0,
+        "pct": 2.0,
+        "volume": None,
+        "attributes": {"signal": "盘中快速上涨", "evidence": "测试"},
+    }
+    assert radar._create_candidate(store, now=now, **create_kwargs) is True
+    first = store.active_candidates(now)[0]
+    store.set_telegram_delivery(first["candidate_id"], "123", 456, now)
+    assert store.close_candidate(first["candidate_id"], "测试结束", now) is True
+
+    assert radar._create_candidate(
+        store, now=now + timedelta(minutes=5), **create_kwargs
+    ) is False
+    assert radar._create_candidate(
+        store, now=now + timedelta(days=1), **create_kwargs
+    ) is True
+
+
+def test_radar_waits_for_confirmation_before_sending(monkeypatch, tmp_path):
+    store = _make_store(tmp_path, monkeypatch)
+    now = _a_share_time()
+    sent = []
+    monkeypatch.setattr(settings, "RADAR_INTERACTION_BOT_TOKEN", "token")
+    monkeypatch.setattr(settings, "RADAR_INTERACTION_CHAT_ID", "123")
+    monkeypatch.setattr(settings, "RADAR_CONFIRM_AFTER_MINUTES", 3)
+    monkeypatch.setattr(settings, "RADAR_CONFIRM_MAX_REVERSAL_PCT", 0.5)
+    monkeypatch.setattr(
+        radar, "send_tg_interactive", lambda *args, **kwargs: sent.append(args[0]) or 456
+    )
+    monkeypatch.setattr(
+        radar,
+        "_fetch_candidate_quote",
+        lambda _: {"name": "测试股", "price": 10.02, "pct": 2.2, "volume": None},
+    )
+
+    assert (
+        radar._create_candidate(
+            store,
+            market="CN",
+            symbol="000001",
+            name="测试股",
+            price=10.0,
+            pct=2.0,
+            volume=None,
+            attributes={"signal": "盘中快速上涨", "evidence": "测试"},
+            now=now,
+        )
+        is True
+    )
+    assert radar._process_active_candidates(store, now + timedelta(minutes=2)) == (1, 0, 0)
+    assert sent == []
+
+    assert radar._process_active_candidates(store, now + timedelta(minutes=3)) == (1, 1, 0)
+    candidate = store.active_candidates(now + timedelta(minutes=3))[0]
+    assert candidate["status"] == "confirmed"
+    assert candidate["telegram_message_id"] == 456
+    assert len(sent) == 1
+    assert "🟢 已确认" in sent[0]
+
+
+def test_radar_discards_a_reversed_silent_candidate(monkeypatch, tmp_path):
+    store = _make_store(tmp_path, monkeypatch)
+    now = _a_share_time()
+    sent = []
+    monkeypatch.setattr(settings, "RADAR_CONFIRM_AFTER_MINUTES", 3)
+    monkeypatch.setattr(settings, "RADAR_CONFIRM_MAX_REVERSAL_PCT", 0.5)
+    monkeypatch.setattr(
+        radar,
+        "send_tg_interactive",
+        lambda *args, **kwargs: sent.append(args) or 456,
+    )
+    monkeypatch.setattr(
+        radar,
+        "_fetch_candidate_quote",
+        lambda _: {"name": "测试股", "price": 9.94, "pct": 1.4, "volume": None},
+    )
+    assert (
+        radar._create_candidate(
+            store,
+            market="CN",
+            symbol="000001",
+            name="测试股",
+            price=10.0,
+            pct=2.0,
+            volume=None,
+            attributes={"signal": "盘中快速上涨", "evidence": "测试"},
+            now=now,
+        )
+        is True
+    )
+    candidate_id = store.active_candidates(now)[0]["candidate_id"]
+
+    assert radar._process_active_candidates(store, now + timedelta(minutes=3)) == (1, 0, 1)
+    candidate = store.get_candidate(candidate_id)
+    assert candidate["status"] == "closed"
+    assert candidate["closed_reason"] == "确认期价格反转"
+    assert sent == []
+
+
+def test_radar_retries_confirmation_delivery_without_using_the_session_quota(monkeypatch, tmp_path):
+    store = _make_store(tmp_path, monkeypatch)
+    now = _a_share_time()
+    deliveries = iter([None, 456])
+    monkeypatch.setattr(settings, "RADAR_CONFIRM_AFTER_MINUTES", 3)
+    monkeypatch.setattr(radar, "send_tg_interactive", lambda *args, **kwargs: next(deliveries))
+    monkeypatch.setattr(
+        radar,
+        "_fetch_candidate_quote",
+        lambda _: {"name": "测试股", "price": 10.0, "pct": 2.0, "volume": None},
+    )
+    assert (
+        radar._create_candidate(
+            store,
+            market="CN",
+            symbol="000001",
+            name="测试股",
+            price=10.0,
+            pct=2.0,
+            volume=None,
+            attributes={"signal": "盘中快速上涨", "evidence": "测试"},
+            now=now,
+        )
+        is True
+    )
+
+    assert radar._process_active_candidates(store, now + timedelta(minutes=3)) == (1, 0, 0)
+    assert radar._process_active_candidates(store, now + timedelta(minutes=4)) == (1, 1, 0)
+
+
+def test_radar_expiry_does_not_send_an_extra_message(monkeypatch, tmp_path):
+    store = _make_store(tmp_path, monkeypatch)
+    now = _a_share_time()
+    candidate = _create_candidate(store, now)
+    sent = []
+    monkeypatch.setattr(radar, "_send_tg_with_summary", lambda *args, **kwargs: sent.append(args) or True)
+
+    assert radar._close_expired_candidates(store, now + timedelta(minutes=10)) == 1
+    assert store.get_candidate(candidate["candidate_id"])["status"] == "closed"
+    assert sent == []
+
+
+def test_radar_mute_stops_tracking_and_suppresses_future_candidates(monkeypatch, tmp_path):
+    store = _make_store(tmp_path, monkeypatch)
+    now = _a_share_time()
+    candidate = _create_candidate(store, now)
+    monkeypatch.setattr(settings, "INTERACTION_ALLOWED_USER_IDS", [999])
+    monkeypatch.setattr(settings, "RADAR_INTERACTION_CHAT_ID", "123")
+    monkeypatch.setattr(settings, "RADAR_SYMBOL_MUTE_DAYS", 7)
+    buttons = radar._candidate_buttons(candidate["candidate_id"])
+    assert buttons["inline_keyboard"][1][1]["callback_data"].endswith(":mute")
+
+    notice = radar.handle_radar_callback(
+        {
+            "data": f"radar:{candidate['candidate_id']}:mute",
+            "from": {"id": 999},
+            "message": {"chat": {"id": 123, "type": "private"}},
+        },
+        now + timedelta(minutes=1),
+    )
+
+    assert "未来 7 天不再推送" in notice
+    assert store.get_candidate(candidate["candidate_id"])["status"] == "closed"
+    assert store.suppressed_until("CN", "000001", now + timedelta(minutes=2))
+
+    sent = []
+    monkeypatch.setattr(settings, "RADAR_INTERACTION_BOT_TOKEN", "token")
+    monkeypatch.setattr(
+        radar, "send_tg_interactive", lambda *args, **kwargs: sent.append(kwargs) or 456
+    )
+    assert (
+        radar._create_candidate(
+            store,
+            market="CN",
+            symbol="000001",
+            name="测试股",
+            price=10.2,
+            pct=2.0,
+            volume=None,
+            attributes={"signal": "盘中快速上涨", "evidence": "测试"},
+            now=now + timedelta(days=1),
+        )
+        is False
+    )
+    assert sent == []
+
+
 def test_callback_extends_only_for_an_allowed_user(monkeypatch, tmp_path):
     store = _make_store(tmp_path, monkeypatch)
     now = _a_share_time()
     candidate = _create_candidate(store, now)
     monkeypatch.setattr(settings, "INTERACTION_ALLOWED_USER_IDS", [999])
-    monkeypatch.setattr(settings, "INTERACTION_CHAT_ID", "123")
+    monkeypatch.setattr(settings, "RADAR_INTERACTION_CHAT_ID", "123")
 
     notice = radar.handle_radar_callback(
         {
@@ -94,6 +309,213 @@ def test_callback_extends_only_for_an_allowed_user(monkeypatch, tmp_path):
     )
     assert "仅允许" in notice
     assert store.get_candidate(candidate["candidate_id"])["status"] == "tracking"
+
+
+def test_listener_replies_to_private_id_request_without_authorizing_user(monkeypatch):
+    from core import telegram_interaction
+
+    calls = []
+    monkeypatch.setattr(
+        telegram_interaction,
+        "_telegram_post",
+        lambda method, payload, **kwargs: calls.append((method, payload)) or {},
+    )
+    private_message = {
+        "text": "/id",
+        "from": {"id": 999},
+        "chat": {"id": 999, "type": "private"},
+    }
+    group_message = {
+        "text": "/id",
+        "from": {"id": 999},
+        "chat": {"id": -100, "type": "supergroup"},
+    }
+
+    assert telegram_interaction._handle_private_id_command(private_message) is True
+    assert telegram_interaction._handle_private_id_command(group_message) is False
+    assert calls == [
+        (
+            "sendMessage",
+            {
+                "chat_id": "999",
+                "text": "你的 Telegram ID：999\n把它发给管理员，即可开通群组里的追踪按钮。",
+            },
+        )
+    ]
+
+
+def test_listener_targets_primary_radar_and_monitor_status_bots(monkeypatch):
+    from core import telegram_interaction
+
+    monkeypatch.setattr(settings, "RADAR_INTERACTION_BOT_TOKEN", "primary-token")
+    monkeypatch.setattr(settings, "RADAR_INTERACTION_CHAT_ID", "primary-chat")
+    monkeypatch.setattr(settings, "MARKET_INTERACTION_BOT_TOKEN", "monitor-token")
+    monkeypatch.setattr(settings, "MARKET_INTERACTION_CHAT_ID", "monitor-chat")
+    monkeypatch.setattr(settings, "MARKET_ALERT_INTERACTION_ENABLED", False)
+
+    assert telegram_interaction._listener_targets() == [
+        ("radar_last_update_id", "primary-token"),
+        ("market_last_update_id", "monitor-token"),
+    ]
+
+
+def test_status_panel_sends_a_refresh_button(monkeypatch, tmp_path):
+    from core import telegram_interaction
+    from core.runtime import get_run_status_file
+
+    now = datetime.now(settings.SHA_TZ)
+    monkeypatch.setattr(settings, "RUN_STATUS_DIR", str(tmp_path / "runtime_status"))
+    monkeypatch.setattr(settings, "HEALTH_REQUIRED_MODES", ("monitor",))
+    status_path = get_run_status_file("monitor")
+    (tmp_path / "runtime_status").mkdir()
+    with open(status_path, "w", encoding="utf-8") as file:
+        json.dump(
+            {
+                "mode": "monitor",
+                "status": "success",
+                "finished_at": now.isoformat(),
+                "reason": "",
+            },
+            file,
+        )
+    monkeypatch.setattr(settings, "MARKET_INTERACTION_BOT_TOKEN", "monitor-token")
+    monkeypatch.setattr(settings, "MARKET_INTERACTION_CHAT_ID", "monitor-chat")
+    calls = []
+    monkeypatch.setattr(
+        telegram_interaction,
+        "_telegram_post",
+        lambda method, payload, **kwargs: calls.append((method, payload, kwargs)) or {},
+    )
+
+    assert telegram_interaction.send_status_panel() is True
+    assert calls[0][0] == "sendMessage"
+    assert calls[0][1]["chat_id"] == "monitor-chat"
+    assert calls[0][1]["reply_markup"]["inline_keyboard"][0][0] == {
+        "text": "📊 状态",
+        "callback_data": "system:status",
+    }
+    assert "🟢 monitor：正常" in calls[0][1]["text"]
+
+
+def test_status_panel_uses_mode_specific_freshness(monkeypatch, tmp_path):
+    from core import telegram_interaction
+    from core.runtime import get_run_status_file
+
+    now = datetime.now(settings.SHA_TZ)
+    monkeypatch.setattr(settings, "RUN_STATUS_DIR", str(tmp_path / "runtime_status"))
+    monkeypatch.setattr(settings, "HEALTH_REQUIRED_MODES", ("daily",))
+    monkeypatch.setattr(
+        settings,
+        "STATUS_PANEL_MAX_AGE_MINUTES",
+        {"daily": 4320, "telegram_listener": 3},
+    )
+    (tmp_path / "runtime_status").mkdir()
+    for mode, finished_at in (
+        ("daily", now - timedelta(hours=12)),
+        ("telegram_listener", now),
+    ):
+        with open(get_run_status_file(mode), "w", encoding="utf-8") as file:
+            json.dump(
+                {"mode": mode, "status": "success", "finished_at": finished_at.isoformat()},
+                file,
+            )
+
+    message = telegram_interaction._format_status_message(now)
+
+    assert "🟢 daily：正常 · 720 分钟前" in message
+    assert "整体：🟢 正常" in message
+
+
+def test_status_button_refreshes_a_current_authorized_status(monkeypatch, tmp_path):
+    from core import telegram_interaction
+    from core.runtime import get_run_status_file
+
+    now = datetime.now(settings.SHA_TZ)
+    monkeypatch.setattr(settings, "RUN_STATUS_DIR", str(tmp_path / "runtime_status"))
+    monkeypatch.setattr(settings, "HEALTH_REQUIRED_MODES", ("monitor",))
+    (tmp_path / "runtime_status").mkdir()
+    with open(get_run_status_file("monitor"), "w", encoding="utf-8") as file:
+        json.dump(
+            {
+                "mode": "monitor",
+                "status": "partial",
+                "finished_at": now.isoformat(),
+                "reason": "海外 RSS 部分失败",
+            },
+            file,
+        )
+    monkeypatch.setattr(settings, "MARKET_INTERACTION_BOT_TOKEN", "monitor-token")
+    monkeypatch.setattr(settings, "MARKET_INTERACTION_CHAT_ID", "monitor-chat")
+    monkeypatch.setattr(settings, "INTERACTION_ALLOWED_USER_IDS", [999])
+    calls = []
+    monkeypatch.setattr(
+        telegram_interaction,
+        "_telegram_post",
+        lambda method, payload, **kwargs: calls.append((method, payload, kwargs)) or {},
+    )
+
+    notice = telegram_interaction._handle_callback(
+        {
+            "data": "system:status",
+            "from": {"id": 999},
+            "message": {
+                "message_id": 456,
+                "chat": {"id": "monitor-chat", "type": "supergroup"},
+            },
+        },
+        now,
+    )
+
+    assert notice == "监控状态已刷新。"
+    assert calls[0][0] == "editMessageText"
+    assert calls[0][1]["message_id"] == 456
+    assert "🟡 monitor：部分完成" in calls[0][1]["text"]
+    assert "海外 RSS 部分失败" in calls[0][1]["text"]
+
+
+def test_status_button_refreshes_a_primary_bot_message(monkeypatch, tmp_path):
+    from core import telegram_interaction
+    from core.runtime import get_run_status_file
+
+    now = datetime.now(settings.SHA_TZ)
+    monkeypatch.setattr(settings, "RUN_STATUS_DIR", str(tmp_path / "runtime_status"))
+    monkeypatch.setattr(settings, "HEALTH_REQUIRED_MODES", ("monitor",))
+    (tmp_path / "runtime_status").mkdir()
+    with open(get_run_status_file("monitor"), "w", encoding="utf-8") as file:
+        json.dump(
+            {
+                "mode": "monitor",
+                "status": "success",
+                "finished_at": now.isoformat(),
+            },
+            file,
+        )
+    monkeypatch.setattr(settings, "RADAR_INTERACTION_CHAT_ID", "primary-chat")
+    monkeypatch.setattr(settings, "MARKET_INTERACTION_CHAT_ID", "monitor-chat")
+    monkeypatch.setattr(settings, "INTERACTION_ALLOWED_USER_IDS", [999])
+    calls = []
+    monkeypatch.setattr(
+        telegram_interaction,
+        "_telegram_post",
+        lambda method, payload, **kwargs: calls.append((method, payload, kwargs)) or {},
+    )
+
+    notice = telegram_interaction._handle_callback(
+        {
+            "data": "system:status",
+            "from": {"id": 999},
+            "message": {
+                "message_id": 789,
+                "chat": {"id": "primary-chat", "type": "supergroup"},
+            },
+        },
+        now,
+        token="primary-token",
+    )
+
+    assert notice == "监控状态已刷新。"
+    assert calls[0][1]["chat_id"] == "primary-chat"
+    assert calls[0][2]["token"] == "primary-token"
 
 
 def test_active_candidate_stops_after_price_invalidation(monkeypatch, tmp_path):
@@ -153,3 +575,47 @@ def test_polygon_snapshot_normalizes_a_candidate_quote(monkeypatch):
             "source": "polygon",
         }
     ]
+
+
+def test_us_radar_prefers_early_low_price_moves(monkeypatch, tmp_path):
+    store = _make_store(tmp_path, monkeypatch)
+    now = _a_share_time()
+    created = []
+    monkeypatch.setattr(settings, "POLYGON_API_KEY", "test-key")
+    monkeypatch.setattr(settings, "US_RADAR_MIN_DAY_CHANGE_PCT", 3.0)
+    monkeypatch.setattr(settings, "US_RADAR_MAX_DAY_CHANGE_PCT", 15.0)
+    monkeypatch.setattr(radar, "_is_us_trading_session", lambda _: True)
+    monkeypatch.setattr(
+        radar,
+        "get_us_stock_snapshots",
+        lambda: [
+            {
+                "symbol": "EARLY",
+                "name": "Early Corp",
+                "price": 2.5,
+                "pct": 4.0,
+                "volume": 1_000_000,
+                "dollar_volume": 2_500_000,
+            },
+            {
+                "symbol": "LATE",
+                "name": "Late Corp",
+                "price": 2.5,
+                "pct": 25.0,
+                "volume": 1_000_000,
+                "dollar_volume": 2_500_000,
+            },
+        ],
+    )
+    monkeypatch.setattr(radar, "get_us_stock_news", lambda _: [])
+    monkeypatch.setattr(
+        radar,
+        "_create_candidate",
+        lambda _store, **kwargs: created.append(kwargs) or True,
+    )
+
+    sampled, candidates = radar._scan_us_candidates(store, now)
+
+    assert sampled == 2
+    assert candidates == 1
+    assert [candidate["symbol"] for candidate in created] == ["EARLY"]

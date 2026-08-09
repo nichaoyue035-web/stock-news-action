@@ -1,0 +1,22 @@
+[Unit]
+Description=Listen for stock-news Telegram radar buttons
+After=network-online.target
+Wants=network-online.target
+OnFailure=stock-news-action-failure@%n.service
+
+[Service]
+Type=simple
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/home/ec2-user/apps/stock-news-action
+EnvironmentFile=/home/ec2-user/.config/stock-news-action/environment
+Environment=PYTHONUNBUFFERED=1
+Environment=STATE_DIR=/var/lib/stock-news-action
+StateDirectory=stock-news-action
+UMask=0077
+ExecStart=/home/ec2-user/apps/stock-news-action/.venv/bin/python /home/ec2-user/apps/stock-news-action/main.py telegram_listener
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -112,6 +112,25 @@ class MonitorStore:
                 CREATE INDEX IF NOT EXISTS idx_monitor_alerts_dedup_sent
                 ON monitor_alerts(dedup_key, status, sent_at DESC);
 
+                CREATE TABLE IF NOT EXISTS news_trackers (
+                    tracking_id TEXT PRIMARY KEY,
+                    event_key TEXT NOT NULL UNIQUE,
+                    title TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    link TEXT NOT NULL,
+                    telegram_chat_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    activated_at TEXT,
+                    expires_at TEXT,
+                    last_checked_at TEXT,
+                    update_count INTEGER NOT NULL DEFAULT 0,
+                    closed_reason TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_news_trackers_active
+                ON news_trackers(status, expires_at);
+
                 CREATE TABLE IF NOT EXISTS monitor_locks (
                     lock_name TEXT PRIMARY KEY,
                     acquired_at TEXT NOT NULL
@@ -188,6 +207,143 @@ class MonitorStore:
                 ),
             )
             return cursor.rowcount == 1
+
+    def offer_news_tracking(
+        self,
+        *,
+        event_key: str,
+        item: dict[str, Any],
+        telegram_chat_id: str,
+        now: datetime,
+    ) -> str:
+        """Persist a short callback-safe ID after an alert was delivered."""
+        tracking_id = event_key[:16]
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO news_trackers (
+                    tracking_id, event_key, title, source, link, telegram_chat_id,
+                    status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'offered', ?)
+                """,
+                (
+                    tracking_id,
+                    event_key,
+                    str(item.get("title") or "未知事件"),
+                    str(item.get("source") or "未知来源"),
+                    str(item.get("link") or ""),
+                    str(telegram_chat_id),
+                    _as_utc_text(now),
+                ),
+            )
+        return tracking_id
+
+    def get_news_tracker(self, tracking_id: str) -> Optional[dict[str, Any]]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM news_trackers WHERE tracking_id = ?", (tracking_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def activate_news_tracker(
+        self, tracking_id: str, minutes: int, now: datetime
+    ) -> bool:
+        """Start or extend a user-requested event tracking window."""
+        now_text = _as_utc_text(now)
+        expires_at = _as_utc_text(now + timedelta(minutes=max(1, minutes)))
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE news_trackers
+                SET status = 'tracking', activated_at = ?, expires_at = ?,
+                    last_checked_at = ?, closed_reason = ''
+                WHERE tracking_id = ? AND status IN ('offered', 'tracking')
+                """,
+                (now_text, expires_at, now_text, tracking_id),
+            )
+        return cursor.rowcount == 1
+
+    def close_news_tracker(self, tracking_id: str, reason: str) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE news_trackers
+                SET status = 'closed', closed_reason = ?
+                WHERE tracking_id = ? AND status IN ('offered', 'tracking')
+                """,
+                (str(reason)[:120], tracking_id),
+            )
+        return cursor.rowcount == 1
+
+    def active_news_trackers(self, now: datetime) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM news_trackers
+                WHERE status = 'tracking' AND expires_at > ?
+                ORDER BY activated_at ASC
+                """,
+                (_as_utc_text(now),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def expiring_news_trackers(self, now: datetime) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM news_trackers
+                WHERE status = 'tracking' AND expires_at <= ?
+                ORDER BY expires_at ASC
+                """,
+                (_as_utc_text(now),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def news_events_since(
+        self, received_after: str, received_before: datetime
+    ) -> list[dict[str, Any]]:
+        """Return only already-recorded, newly received source items."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT event_key, title, source, link, payload
+                FROM news_events
+                WHERE received_at > ? AND received_at <= ?
+                ORDER BY received_at ASC
+                """,
+                (str(received_after), _as_utc_text(received_before)),
+            ).fetchall()
+        events: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            payload.update(
+                {
+                    "event_key": str(row["event_key"]),
+                    "title": str(row["title"]),
+                    "source": str(row["source"]),
+                    "link": str(row["link"]),
+                }
+            )
+            events.append(payload)
+        return events
+
+    def mark_news_tracker_checked(
+        self, tracking_id: str, now: datetime, update_count: int = 0
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE news_trackers
+                SET last_checked_at = ?, update_count = update_count + ?
+                WHERE tracking_id = ? AND status = 'tracking'
+                """,
+                (_as_utc_text(now), max(0, int(update_count)), tracking_id),
+            )
 
     def record_quote(
         self,
@@ -322,3 +478,60 @@ class MonitorStore:
                 """,
                 (_as_utc_text(failed_at), str(error or "未知错误")[:160], alert_key),
             )
+
+    def recent_sent_alert_payloads(
+        self,
+        *,
+        alert_type: str,
+        severity: str,
+        now: datetime,
+        lookback_minutes: int,
+    ) -> list[dict[str, Any]]:
+        """Return recent successful payloads for deterministic pre-send deduplication."""
+        cutoff = _as_utc_text(now - timedelta(minutes=max(1, lookback_minutes)))
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload
+                FROM monitor_alerts
+                WHERE alert_type = ? AND severity = ? AND status = 'sent'
+                    AND sent_at >= ?
+                ORDER BY sent_at DESC
+                LIMIT 100
+                """,
+                (alert_type, severity, cutoff),
+            ).fetchall()
+
+        payloads: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict):
+                payloads.append(payload)
+        return payloads
+
+    def prune(self, now: datetime, retention_days: int) -> dict[str, int]:
+        """Remove only expired monitor history, never active event tracking."""
+        cutoff = _as_utc_text(now - timedelta(days=max(1, retention_days)))
+        with self._connect() as connection:
+            deleted = {
+                "news_events": connection.execute(
+                    "DELETE FROM news_events WHERE received_at < ?", (cutoff,)
+                ).rowcount,
+                "market_quotes": connection.execute(
+                    "DELETE FROM market_quotes WHERE observed_at < ?", (cutoff,)
+                ).rowcount,
+                "monitor_alerts": connection.execute(
+                    "DELETE FROM monitor_alerts WHERE updated_at < ?", (cutoff,)
+                ).rowcount,
+                "news_trackers": connection.execute(
+                    """
+                    DELETE FROM news_trackers
+                    WHERE status != 'tracking' AND created_at < ?
+                    """,
+                    (cutoff,),
+                ).rowcount,
+            }
+        return {name: max(0, count) for name, count in deleted.items()}

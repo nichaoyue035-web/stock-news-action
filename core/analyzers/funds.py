@@ -7,6 +7,8 @@ from typing import Any
 
 from config import settings
 from core.data_fetcher import get_market_funds, get_news
+from core.market_calendar import is_cn_a_share_trading_day
+from utils.notifier import log_info
 
 
 def _as_float(value: Any) -> float:
@@ -87,14 +89,14 @@ def _format_funds_snapshot(
     outgoing: list[dict[str, Any]],
     related_news: list[dict[str, Any]],
 ) -> str:
-    lines = [f"【资金温度】{_fund_market_temperature(incoming, outgoing)}", "【流入主线】"]
+    lines = [f"**资金温度：** {_fund_market_temperature(incoming, outgoing)}", "**流入主线：**"]
     lines.extend(_format_fund_line(item) for item in incoming)
-    lines.append("【流出压力】")
+    lines.append("**流出压力：**")
     lines.extend(_format_fund_line(item) for item in outgoing)
-    lines.append("【新闻催化】")
+    lines.append("**相关新闻：**")
     if related_news:
         lines.extend(
-            f"- [{item.get('source') or '未知来源'}] {item.get('title') or '未知新闻'}"
+            f"- [{item.get('source') or '未知来源'}] **{item.get('title') or '未知新闻'}**"
             for item in related_news
         )
     else:
@@ -109,18 +111,24 @@ def run_funds(prompts: dict[str, str]) -> None:
         _format_market_message,
         _format_news_prompt_line,
         _format_sources,
+        format_ai_insight,
     )
     from core.runtime import (
         _record_fetch_success,
         _record_news_summary,
         _send_health_status,
         _send_tg_with_summary,
+        _set_run_reason,
     )
     from core.analyzer import (
         _get_ai_response_with_health,
     )
 
     now = datetime.now(settings.SHA_TZ)
+    if not is_cn_a_share_trading_day(now):
+        log_info(f"A 股休市，跳过资金流摘要：{now.strftime('%Y-%m-%d')}")
+        _set_run_reason("market closed", status="success")
+        return
     top_in, top_out = get_market_funds()
     _record_fetch_success(bool(top_in))
     if not top_in:
@@ -161,7 +169,7 @@ def run_funds(prompts: dict[str, str]) -> None:
             category="capital_flow",
             importance="medium",
             summary=_format_funds_snapshot(incoming, outgoing, related_news),
-            impact=content,
+            impact=format_ai_insight(content),
             links=_format_links([item.get("link") for item in related_news]),
             market_scope="行业",
             related_sectors=[item["name"] for item in incoming[:3]],

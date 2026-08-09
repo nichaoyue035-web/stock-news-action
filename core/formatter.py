@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -17,6 +18,40 @@ CATEGORY_LABELS: dict[str, str] = {
 IMPORTANCE_LABELS: dict[str, str] = {"high": "高", "medium": "中", "low": "低"}
 WEEKDAY_NAMES: tuple[str, ...] = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
+AI_LABELS: frozenset[str] = frozenset(
+    {
+        "主线",
+        "情绪",
+        "机会与风险",
+        "风险与验证",
+        "留意",
+        "收盘观察",
+        "依据",
+        "可能影响",
+        "下个交易日看",
+        "隔夜重点",
+        "今日催化",
+        "开盘后看",
+        "焦点",
+        "延续条件",
+        "风险变量",
+        "下午看",
+        "结论",
+        "确认度",
+        "可能传导",
+        "明天看",
+        "发生",
+        "历史类比",
+        "预测",
+        "预测路径",
+        "验证点",
+        "接下来",
+        "可信度",
+        "置信度",
+    }
+)
+CONFIDENCE_LABELS: frozenset[str] = frozenset({"可信度", "置信度", "确认度"})
+
 
 def _soften_trading_language(text: Any) -> str:
     softened = str(text or "").strip()
@@ -24,6 +59,99 @@ def _soften_trading_language(text: Any) -> str:
     for raw, replacement in replacements.items():
         softened = softened.replace(raw, replacement)
     return softened
+
+
+def _clean_message_text(text: Any) -> str:
+    """Keep generated content readable even when an older prompt uses report labels."""
+    clean = _soften_trading_language(text).strip()
+    clean = re.sub(r"(?m)^【([^】]+)】\s*", r"\1：", clean)
+    clean = re.sub(r"\n{3,}", "\n\n", clean)
+    return clean
+
+
+def _extract_confidence(value: Any) -> tuple[float | None, str]:
+    """Extract an explicitly stated model confidence without inventing a score."""
+    text = str(value or "").strip()
+    if re.search(r"\d{1,3}\s*[-~至]\s*\d{1,3}\s*(?:%|％)", text):
+        return None, text
+    match = re.search(r"(?<!\d)(\d{1,3}(?:\.\d+)?)\s*(?:%|％|/\s*100)", text)
+    if match:
+        score = float(match.group(1))
+        if 0 <= score <= 100:
+            remainder = (text[: match.start()] + text[match.end() :]).strip(" ：:，,；;-")
+            return score, remainder
+
+    level_map = {"较高": 70.0, "中等": 55.0, "高": 80.0, "中": 55.0, "低": 30.0}
+    for level, score in level_map.items():
+        if text.startswith(level):
+            remainder = text[len(level) :].strip(" ：:，,；;-")
+            return score, f"{level}（未提供百分比，按等级展示）{remainder}".strip()
+    return None, text
+
+
+def _confidence_bar(score: float | None, width: int = 10) -> str:
+    if score is None:
+        return "░" * width
+    filled = max(0, min(width, int(score / 100 * width + 0.5)))
+    return "█" * filled + "░" * (width - filled)
+
+
+def _split_ai_label(line: str) -> tuple[str, str, str] | None:
+    """Read one AI label line, tolerating bullets and markdown around labels."""
+    match = re.match(
+        r"^(\s*(?:[-•]\s*)?)(?:\*{1,2})?([^:：*]{1,12})(?:\*{1,2})?\s*[:：]\s*(.*)$",
+        line.strip(),
+    )
+    if not match:
+        return None
+    prefix = "- " if match.group(1).strip().startswith(("-", "•")) else ""
+    label = match.group(2).strip()
+    return prefix, label, match.group(3).strip()
+
+
+def format_ai_insight(content: Any, *, include_confidence: bool = True) -> str:
+    """Make AI output compact and expose a trustworthy, visual confidence score."""
+    clean = _clean_message_text(content)
+    if not clean:
+        return ""
+
+    formatted: list[str] = []
+    confidence_line = ""
+    for raw_line in clean.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parsed = _split_ai_label(line)
+        if not parsed:
+            formatted.append(line)
+            continue
+        prefix, label, value = parsed
+        if label not in AI_LABELS:
+            formatted.append(line)
+            continue
+        if label in CONFIDENCE_LABELS:
+            score, note = _extract_confidence(value)
+            if score is None:
+                confidence_line = f"**可信度：** {_confidence_bar(None)} 未量化（AI未提供百分比）"
+            else:
+                note_text = f"（{note}）" if note else ""
+                confidence_line = (
+                    f"**可信度：** {_confidence_bar(score)} {score:.0f}%{note_text}"
+                )
+            continue
+        formatted.append(f"{prefix}**{label}：** {value}".rstrip())
+
+    if include_confidence:
+        if not confidence_line:
+            confidence_line = f"**可信度：** {_confidence_bar(None)} 未量化（AI未提供百分比）"
+        if formatted:
+            formatted.append("")
+        formatted.append(confidence_line)
+    return "\n".join(formatted)
+
+
+def _is_display_value(value: Any) -> bool:
+    return str(value or "").strip() not in {"", "未知", "其他", "见上方摘要"}
 
 
 def _format_news_time(item: dict[str, Any]) -> str:
@@ -75,7 +203,10 @@ def _format_news_facts(
         source = str(item.get("source") or "未知来源").strip()
         time_text = str(item.get("time_str") or "").strip()
         time_prefix = f"{time_text}｜" if include_time and time_text else ""
-        facts.append(f"{len(facts) + 1}. [{time_prefix}{source}] {title}")
+        facts.append(
+            f"{len(facts) + 1}. **{title}**\n"
+            f"   {time_prefix}{source}"
+        )
     return "\n".join(facts) if facts else "未获取到可核对的新闻事实。"
 
 
@@ -159,22 +290,48 @@ def _infer_market_importance(item: dict[str, Any]) -> str:
 
 
 def _title_icon(title: str) -> str:
-    for keyword, icon in (("资金", "💰"), ("国际", "🌍"), ("宏观", "🌍"), ("每日复盘", "🌇"), ("盘中茶歇", "🍵"), ("市场信息", "📰"), ("市场观察", "🔎"), ("观察标的", "👀"), ("复盘辅助", "🧾")):
+    for keyword, icon in (("美股", "🇺🇸"), ("资金", "💰"), ("国际", "🌍"), ("宏观", "🌍"), ("三小时", "🧭"), ("市场总结", "🧭"), ("每日复盘", "🌇"), ("盘前", "☀️"), ("盘中茶歇", "🍵"), ("自选股", "📈"), ("实时监控", "⚠️"), ("市场信息", "📰"), ("市场观察", "🔎"), ("观察标的", "👀"), ("复盘辅助", "🧾")):
         if keyword in title:
             return icon
     return "📌"
 
 
-def _format_market_message(title: str, *, report_time: str, source: str, category: str, importance: str, summary: str, impact: str = "见上方摘要", links: str = "未知", market_scope: str = "其他", related_sectors: Any = None, include_title: bool = True) -> str:
-    title_prefix = f"{_title_icon(title)} {title}\n\n" if include_title else ""
-    return (
-        f"{title_prefix}【时间】{report_time or '未知'}\n"
-        f"【来源】{source or '未知'}\n"
-        f"【分类】{_display_category(category)}\n"
-        f"【重要性】{_display_importance(importance)}\n"
-        f"【影响范围】{market_scope or '其他'}\n"
-        f"【相关板块】{_format_related_sectors(related_sectors)}\n"
-        f"【摘要】{_soften_trading_language(summary)}\n"
-        f"【可能影响】{_soften_trading_language(impact)}\n"
-        f"【原文链接】{links or '未知'}"
-    )
+def _format_market_message(title: str, *, report_time: str, source: str, category: str, importance: str, summary: str, impact: str = "", links: str = "未知", market_scope: str = "其他", related_sectors: Any = None, include_title: bool = True) -> str:
+    """Format Telegram content as a brief, not a field-by-field report.
+
+    ``category`` and ``importance`` remain accepted because callers use them for
+    classification, but they are intentionally not repeated to readers. Urgency
+    belongs in the message title; ordinary messages should lead with the useful
+    information instead of metadata.
+    """
+    display_title = str(title or "市场更新").strip()
+    icon = _title_icon(display_title)
+    heading = display_title if display_title.startswith(icon) else f"{icon} {display_title}"
+    if report_time:
+        heading = f"{heading} · {report_time}"
+
+    parts: list[str] = [f"**{heading}**"] if include_title else []
+    context: list[str] = []
+    if _is_display_value(source):
+        context.append(f"**来源：** {source}")
+    sectors = _format_related_sectors(related_sectors)
+    if _is_display_value(sectors):
+        context.append(f"**涉及：** {sectors}")
+    if context:
+        parts.append(" · ".join(context))
+
+    clean_summary = _clean_message_text(summary)
+    if clean_summary:
+        if "\n" not in clean_summary:
+            clean_summary = f"**{clean_summary}**"
+        parts.append(clean_summary)
+
+    clean_impact = _clean_message_text(impact)
+    if _is_display_value(clean_impact):
+        parts.append(f"**解读**\n{clean_impact}")
+
+    clean_links = _clean_message_text(links)
+    if _is_display_value(clean_links):
+        parts.append(f"**原文**\n{clean_links}")
+
+    return "\n\n".join(parts)

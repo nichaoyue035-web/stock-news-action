@@ -6,6 +6,7 @@ from datetime import datetime
 
 from config import settings
 from core.data_fetcher import get_news
+from core.market_calendar import is_cn_a_share_trading_day
 from utils.notifier import log_info
 
 
@@ -18,6 +19,7 @@ def run_after_market(prompts: dict[str, str]) -> None:
         _format_news_prompt_line,
         _format_sources,
         _format_weekday,
+        format_ai_insight,
     )
     from core.runtime import (
         _record_news_summary,
@@ -32,9 +34,9 @@ def run_after_market(prompts: dict[str, str]) -> None:
     mode = "after_market"
     now = datetime.now(settings.SHA_TZ)
     report_weekday = _format_weekday(now)
-    if mode == "after_market" and now.weekday() >= 5:
+    if mode == "after_market" and not is_cn_a_share_trading_day(now):
         log_info(
-            f"周末跳过：{now.strftime('%Y-%m-%d')} {report_weekday} A股休市，每日复盘不发送"
+            f"休市跳过：{now.strftime('%Y-%m-%d')} {report_weekday} A股休市，每日复盘不发送"
         )
         _set_run_reason("market closed", status="success")
         return
@@ -76,8 +78,8 @@ def run_after_market(prompts: dict[str, str]) -> None:
                 source=_format_sources(news, "东方财富 / RSS"),
                 category=category,
                 importance=importance,
-                summary=f"【收盘事实】\n{_format_news_facts(news, limit=6)}",
-                impact=content,
+                summary=f"**重点新闻：**\n{_format_news_facts(news, limit=6)}",
+                impact=format_ai_insight(content),
                 links=_format_links([item.get("link") for item in news[:5]]),
                 market_scope="A股",
                 related_sectors=[

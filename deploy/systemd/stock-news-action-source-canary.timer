@@ -1,0 +1,10 @@
+[Unit]
+Description=Probe stock-news core sources without Telegram delivery
+
+[Timer]
+OnCalendar=*-*-* 04:45:00 Asia/Shanghai
+Persistent=true
+Unit=stock-news-action@source_canary.service
+
+[Install]
+WantedBy=timers.target

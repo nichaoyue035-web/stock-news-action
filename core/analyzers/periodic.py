@@ -6,6 +6,8 @@ from datetime import datetime
 
 from config import settings
 from core.data_fetcher import get_news
+from core.market_calendar import is_cn_a_share_trading_day
+from utils.notifier import log_info
 
 
 def run_periodic(prompts: dict[str, str]) -> None:
@@ -17,11 +19,13 @@ def run_periodic(prompts: dict[str, str]) -> None:
         _format_news_prompt_line,
         _format_sources,
         _format_weekday,
+        format_ai_insight,
     )
     from core.runtime import (
         _record_news_summary,
         _send_health_status,
         _send_tg_with_summary,
+        _set_run_reason,
     )
     from core.analyzer import (
         _get_ai_response_with_health,
@@ -29,6 +33,10 @@ def run_periodic(prompts: dict[str, str]) -> None:
 
     now = datetime.now(settings.SHA_TZ)
     report_weekday = _format_weekday(now)
+    if not is_cn_a_share_trading_day(now):
+        log_info(f"A 股休市，跳过盘中简报：{now.strftime('%Y-%m-%d')}")
+        _set_run_reason("market closed", status="success")
+        return
 
     news = get_news(240)
     _record_news_summary(news)
@@ -58,8 +66,8 @@ def run_periodic(prompts: dict[str, str]) -> None:
                 source=_format_sources(news, "东方财富 / RSS"),
                 category="盘中",
                 importance="低（盘中简报）",
-                summary=f"【盘中事实】\n{_format_news_facts(news, limit=5)}",
-                impact=content,
+                summary=f"**重点新闻：**\n{_format_news_facts(news, limit=5)}",
+                impact=format_ai_insight(content),
                 links=_format_links([item.get("link") for item in news[:5]]),
                 market_scope="A股",
                 related_sectors=[

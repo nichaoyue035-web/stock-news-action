@@ -6,7 +6,7 @@ OnCalendar=Mon..Fri *-*-* 10:30:00 Asia/Shanghai
 OnCalendar=Mon..Fri *-*-* 13:30:00 Asia/Shanghai
 OnCalendar=Mon..Fri *-*-* 14:30:00 Asia/Shanghai
 Persistent=true
-Unit=stock-news@periodic.service
+Unit=stock-news-action@periodic.service
 
 [Install]
 WantedBy=timers.target

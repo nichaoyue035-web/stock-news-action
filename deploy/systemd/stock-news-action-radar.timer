@@ -5,7 +5,7 @@ Description=Run interactive A-share and US-stock radar every minute
 OnCalendar=*-*-* *:*:00
 Persistent=true
 AccuracySec=1s
-Unit=stock-news@radar.service
+Unit=stock-news-action@radar.service
 
 [Install]
 WantedBy=timers.target

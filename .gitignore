@@ -2,8 +2,11 @@ __pycache__/
 *.py[cod]
 .venv/
 .pytest_cache/
+.state/
 monitor_seen.json
 monitor.db
 monitor.db-shm
 monitor.db-wal
 runtime_status.json
+runtime_metrics.json
+runtime_metrics.json.lock

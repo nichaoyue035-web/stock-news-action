@@ -121,11 +121,26 @@ def run_recommend() -> None:
     _run_recommend()
 
 
+@_with_run_summary("swing")
+def run_swing() -> None:
+    from core.analyzers.swing import run_swing as _run_swing
+
+    _run_swing()
+
+
 @_with_run_summary("track")
 def run_track() -> None:
     from core.analyzers.track import run_track as _run_track
 
     _run_track()
+
+
+@_with_run_summary("source_canary")
+def run_source_canary() -> None:
+    """Probe live core news providers without producing a Telegram message."""
+    from core.analyzers.source_canary import run_source_canary as _run_source_canary
+
+    _run_source_canary()
 
 
 @_with_run_summary(lambda mode: mode)
@@ -158,6 +173,14 @@ def run_analysis(mode: str) -> None:
 
         run_periodic(prompts)
         return
+    if mode in {"us_premarket", "us_periodic"}:
+        from core.analyzers.us_market import run_us_periodic, run_us_premarket
+
+        if mode == "us_premarket":
+            run_us_premarket(prompts)
+        else:
+            run_us_periodic(prompts)
+        return
     if mode == "after_market":
         from core.analyzers.after_market import run_after_market
 
@@ -175,3 +198,10 @@ def run_review() -> None:
     from core.analyzers.review import run_review as _run_review
 
     _run_review()
+
+
+@_with_run_summary("swing_review")
+def run_swing_review() -> None:
+    from core.analyzers.review import run_review as _run_review
+
+    _run_review(strategy="medium_term")

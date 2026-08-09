@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Replay feed</title>
+  <entry>
+    <title>Replay central-bank update</title>
+    <summary>Offline contract replay item.</summary>
+    <link href="https://www.reuters.com/world/replay-item" />
+    <updated>2099-01-02T01:30:00Z</updated>
+  </entry>
+</feed>
