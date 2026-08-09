@@ -547,25 +547,56 @@ def test_monitor_keeps_specific_cyber_event_from_trusted_source():
 
 def test_urgent_news_alert_is_compact_and_keeps_the_market_essence():
     item = {
-        "title": "突发导弹袭击升级",
-        "digest": "",
+        "title": "银行挤兑引发流动性危机",
+        "digest": "多家机构面临短期流动性压力。",
         "source": "reuters",
         "link": "https://www.reuters.com/world/example",
         "datetime": datetime.now(settings.SHA_TZ),
-        "category": "overseas",
+        "category": "macro",
         "importance": "high",
         "market_scope": "全球",
-        "related_sectors": ["军工", "资源"],
+        "related_sectors": ["银行", "券商"],
     }
 
     content = _build_news_alert(item, "紧急")
 
     assert "🚨 紧急" in content
-    assert "突发导弹袭击升级" in content
-    assert "**影响：** 风险取决于冲突是否扩大并扰乱油运。" in content
-    assert "**接着看：** 看油价、运价、黄金与军工" in content
+    assert "银行挤兑引发流动性危机" in content
+    assert "**影响：** 关键在风险是否扩散为融资与信用压力。" in content
+    assert "**历史相关：**" in content
+    assert "**预测走势：**" in content
+    assert "**可信度：**" in content
     assert "【确认度】" not in content
     assert "【分类】" not in content
+
+
+def test_urgent_economic_alert_uses_ai_history_and_forecast():
+    item = {
+        "title": "市场熔断触发",
+        "digest": "交易所暂停部分交易。",
+        "source": "reuters",
+        "link": "https://www.reuters.com/world/example",
+        "datetime": datetime.now(settings.SHA_TZ),
+        "category": "market_sentiment",
+        "importance": "high",
+        "market_scope": "全球",
+        "related_sectors": ["金融"],
+    }
+
+    content = _build_news_alert(
+        item,
+        "紧急",
+        ai_insight=(
+            "历史类比：类似流动性冲击通常先影响风险偏好。\n"
+            "预测：若交易恢复，压力可能缓解；否则风险继续扩散。\n"
+            "验证点：核对恢复公告和信用利差。\n"
+            "可信度：75%"
+        ),
+    )
+
+    assert "**AI历史与预测：**" in content
+    assert "**历史类比：** 类似流动性冲击通常先影响风险偏好。" in content
+    assert "████████░░ 75%" in content
 
 
 def test_unverified_news_alert_explains_verification_without_sector_call():
@@ -963,7 +994,7 @@ def test_monitor_defers_important_market_news_to_three_hour_summary():
             "link": "https://eastmoney.com/news/1",
             "importance": "high",
         }
-    ) == "紧急"
+    ) is None
 
 
 def test_three_hour_summary_includes_important_domestic_market_news(monkeypatch):

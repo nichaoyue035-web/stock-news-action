@@ -434,6 +434,55 @@ INSTITUTIONAL_FLOW_TERMS = (
     "净流入",
     "净流出",
 )
+ECONOMIC_EMERGENCY_CATEGORIES = frozenset(
+    {"macro", "policy", "capital_flow", "market_sentiment"}
+)
+ECONOMIC_EMERGENCY_TERMS = (
+    "经济",
+    "宏观",
+    "金融",
+    "银行",
+    "流动性",
+    "信用",
+    "债务",
+    "违约",
+    "债券",
+    "国债",
+    "利率",
+    "通胀",
+    "通缩",
+    "汇率",
+    "货币",
+    "人民币",
+    "美元",
+    "美联储",
+    "fed",
+    "gdp",
+    "pmi",
+    "就业",
+    "贸易",
+    "关税",
+    "出口",
+    "进口",
+    "制裁",
+    "禁运",
+    "资本管制",
+    "支付",
+    "清算",
+    "交易",
+    "市场",
+    "股市",
+    "股票",
+    "资金",
+    "原油",
+    "油价",
+    "油气",
+    "航运",
+    "运价",
+    "供应链",
+    "商品",
+    "外汇",
+)
 
 
 def _is_monitor_alert_importance(item: dict[str, Any]) -> bool:
@@ -505,6 +554,29 @@ def _black_swan_alert_severity(item: dict[str, Any]) -> Optional[str]:
     return "紧急"
 
 
+def _is_economic_emergency_candidate(item: dict[str, Any]) -> bool:
+    """Keep urgent monitor delivery focused on risks with economic transmission."""
+    if not _is_black_swan_candidate(item):
+        return False
+    category = str(item.get("category") or "").strip().lower()
+    text = f"{item.get('title', '')} {item.get('digest', '')}".lower()
+    pure_non_economic_risk = _contains_risk_term(
+        text, (*MILITARY_RISK_TERMS, *NATURAL_DISASTER_RISK_TERMS)
+    )
+    if category in ECONOMIC_EMERGENCY_CATEGORIES and not pure_non_economic_risk:
+        return True
+    return _contains_risk_term(
+        text,
+        (
+            *ECONOMIC_EMERGENCY_TERMS,
+            *FINANCIAL_RISK_TERMS,
+            *MARKET_INFRASTRUCTURE_RISK_TERMS,
+            *SANCTIONS_RISK_TERMS,
+            *ENERGY_SUPPLY_RISK_TERMS,
+        ),
+    )
+
+
 def _is_low_value_company_news(item: dict[str, Any]) -> bool:
     """Return True for ordinary single-company updates that should not be pushed."""
     category = str(item.get("category") or "").strip().lower()
@@ -548,7 +620,8 @@ def _news_alert_severity(item: dict[str, Any]) -> Optional[str]:
     """Classify only hard market risks for minute-level delivery."""
     if item.get("discovery_only"):
         return None
-    return _black_swan_alert_severity(item)
+    severity = _black_swan_alert_severity(item)
+    return severity if severity and _is_economic_emergency_candidate(item) else None
 
 
 def _is_news_in_alert_window(item: dict[str, Any], now: datetime) -> bool:
@@ -558,7 +631,7 @@ def _is_news_in_alert_window(item: dict[str, Any], now: datetime) -> bool:
         return False
     if published_at >= now - timedelta(minutes=settings.MONITOR_NEWS_FRESH_MINUTES):
         return True
-    return _is_black_swan_candidate(item) and published_at >= now - timedelta(
+    return _is_economic_emergency_candidate(item) and published_at >= now - timedelta(
         minutes=settings.MONITOR_NEWS_LOOKBACK_MINUTES
     )
 

@@ -4,10 +4,90 @@ from __future__ import annotations
 
 from typing import Any
 
+from config import settings
 from core.analyzers import monitor_rules as rules
+from utils.notifier import log_error
 
 
-def _build_news_alert(item: dict[str, Any], severity: str) -> str:
+def _get_economic_urgent_ai_insight(
+    item: dict[str, Any], prompts: dict[str, str]
+) -> str:
+    """Add AI history and conditional forecast only when the key is configured."""
+    if not settings.DEEPSEEK_API_KEY:
+        return ""
+
+    from core.analyzer import _get_ai_response_with_health
+
+    template = prompts.get(
+        "monitor_urgent", settings.DEFAULT_PROMPTS["monitor_urgent"]
+    )
+    news_txt = (
+        f"来源：{item.get('source') or '未知来源'}\n"
+        f"标题：{item.get('title') or '未知事件'}\n"
+        f"摘要：{item.get('digest') or '无'}\n"
+        f"范围：{item.get('market_scope') or '未知'}\n"
+        f"板块：{_related_sector_text(item)}"
+    )
+    try:
+        content = _get_ai_response_with_health(
+            template.format(news_txt=news_txt),
+            model="deepseek-chat",
+        )
+    except Exception as exc:
+        log_error(f"⚠️ 紧急经济消息 AI 解读失败: {exc.__class__.__name__}")
+        return ""
+    return str(content or "").strip()
+
+
+def _economic_history_prediction(item: dict[str, Any]) -> tuple[str, str]:
+    """Provide a conservative, non-statistical fallback when AI is unavailable."""
+    text = f"{item.get('title', '')} {item.get('digest', '')}".lower()
+    if rules._contains_risk_term(text, rules.FINANCIAL_RISK_TERMS):
+        return (
+            "类似流动性或信用风险通常先冲击金融条件和风险偏好；若政策快速对冲，影响可能集中在短期，否则容易向信用与实体需求扩散。",
+            "短线可能先表现为风险资产承压、避险和高流动性资产占优；若风险隔离和流动性支持落地，市场可能修复，否则压力延续。",
+        )
+    if rules._contains_risk_term(text, rules.MARKET_INFRASTRUCTURE_RISK_TERMS):
+        return (
+            "交易、支付或清算故障若能快速恢复，历史上影响通常偏局部；若持续或波及多家机构，才可能升级为流动性和风险定价问题。",
+            "恢复进度明确时，风险溢价可能回落；若故障扩大或限制交易结算，金融与高换手资产可能继续承压。",
+        )
+    if rules._contains_risk_term(text, rules.SANCTIONS_RISK_TERMS) or rules._contains_risk_term(
+        text, rules.TRADE_POLICY_TERMS
+    ):
+        return (
+            "贸易限制或制裁通常先重定价受影响商品、汇率和供应链，再通过成本与订单预期影响行业；持续时间和豁免范围决定影响是否扩大。",
+            "若限制范围有限且存在替代来源，价格冲击可能逐步回落；若范围扩大或执行趋严，相关商品、出口链和风险偏好可能继续分化。",
+        )
+    if rules._contains_risk_term(text, rules.ENERGY_SUPPLY_RISK_TERMS):
+        return (
+            "能源或航运供给冲击通常先推高商品、运价和保险成本，再通过通胀与利率预期传导至股票市场。",
+            "若中断短暂，能源和运价的风险溢价可能回落；若持续，成本压力和通胀预期可能压制风险资产表现。",
+        )
+    return (
+        "类似高冲击经济事件通常先影响预期和流动性，再通过利率、汇率、商品与盈利预期扩散；持续时间是关键变量。",
+        "短线方向取决于事实是否升级及政策响应；若影响范围受控，风险偏好可能修复，否则压力可能延续至后续交易日。",
+    )
+
+
+def _fallback_confidence(item: dict[str, Any], severity: str) -> str:
+    """Show rule confidence without presenting it as a return or price probability."""
+    score = 55
+    if rules._is_trusted_urgent_source(item):
+        score += 20
+    if rules._is_monitor_alert_importance(item):
+        score += 10
+    if severity == "待核实":
+        score -= 20
+    score = max(0, min(100, score))
+    filled = int(score / 100 * 10 + 0.5)
+    bar = "█" * filled + "░" * (10 - filled)
+    return f"**可信度：** {bar} {score}%（规则判断，不代表涨跌概率）"
+
+
+def _build_news_alert(
+    item: dict[str, Any], severity: str, *, ai_insight: str = ""
+) -> str:
     from core.formatter import _format_market_message, _format_news_time
 
     is_urgent = severity == "紧急"
@@ -17,11 +97,20 @@ def _build_news_alert(item: dict[str, Any], severity: str) -> str:
             item,
             severity=severity,
             report_time=_format_news_time(item),
-        )
+            ai_insight=ai_insight,
+    )
     if is_unverified:
         title = "待核实风险提示"
         importance = "中（待核实）"
-        impact = _build_monitor_impact(item, severity)
+        history, forecast = _economic_history_prediction(item)
+        impact = "\n".join(
+            (
+                _build_monitor_impact(item, severity),
+                f"**历史相关：** {history}",
+                f"**预测走势：** {forecast}",
+                _fallback_confidence(item, severity),
+            )
+        )
     else:
         title = "紧急市场提醒"
         importance = "高（紧急）"
@@ -169,10 +258,10 @@ def _compact_market_insight(item: dict[str, Any], severity: str) -> tuple[str, s
 
 
 def _format_compact_market_alert(
-    item: dict[str, Any], *, severity: str, report_time: str
+    item: dict[str, Any], *, severity: str, report_time: str, ai_insight: str = ""
 ) -> str:
     """Format important and urgent alerts around only the decision-relevant facts."""
-    label = "🚨 紧急" if severity == "紧急" else "🔔 重要"
+    label = "🚨 紧急｜经济风险" if severity == "紧急" else "🔔 重要"
     source = _compact_alert_text(item.get("source") or "未知来源", 48)
     headline = _compact_alert_text(item.get("title") or "未知事件")
     digest = _compact_alert_text(item.get("digest"))
@@ -185,6 +274,24 @@ def _format_compact_market_alert(
     if digest and digest != headline:
         lines.append(f"**重点：** {digest}")
     lines.extend((f"**影响：** {takeaway}", f"**接着看：** {watch}"))
+    if severity == "紧急":
+        if ai_insight:
+            from core.formatter import format_ai_insight
+
+            formatted_ai = format_ai_insight(ai_insight)
+        else:
+            formatted_ai = ""
+        if formatted_ai:
+            lines.extend(("**AI历史与预测：**", formatted_ai))
+        else:
+            history, forecast = _economic_history_prediction(item)
+            lines.extend(
+                (
+                    f"**历史相关：** {history}",
+                    f"**预测走势：** {forecast}",
+                    _fallback_confidence(item, severity),
+                )
+            )
     link = _compact_alert_text(item.get("link"), 300)
     if link:
         lines.append(f"**原文：** {link}")

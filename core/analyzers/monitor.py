@@ -30,6 +30,7 @@ _is_unverified_black_swan = monitor_rules._is_unverified_black_swan
 _has_excluded_black_swan_context = monitor_rules._has_excluded_black_swan_context
 _black_swan_score = monitor_rules._black_swan_score
 _is_black_swan_candidate = monitor_rules._is_black_swan_candidate
+_is_economic_emergency_candidate = monitor_rules._is_economic_emergency_candidate
 _is_trusted_urgent_source = monitor_rules._is_trusted_urgent_source
 _black_swan_alert_severity = monitor_rules._black_swan_alert_severity
 _is_low_value_company_news = monitor_rules._is_low_value_company_news
@@ -177,12 +178,14 @@ def run_monitor(_prompts: dict[str, str]) -> None:
         return
 
     try:
-        _run_monitor_cycle(store, now)
+        _run_monitor_cycle(store, now, _prompts)
     finally:
         store.release_lock("monitor")
 
 
-def _run_monitor_cycle(store: MonitorStore, now: datetime) -> None:
+def _run_monitor_cycle(
+    store: MonitorStore, now: datetime, prompts: dict[str, str] | None = None
+) -> None:
     """Process one claimed monitor cycle after the overlapping-run guard succeeds."""
     from core.runtime import (
         _print_monitor_filter_summary,
@@ -224,6 +227,11 @@ def _run_monitor_cycle(store: MonitorStore, now: datetime) -> None:
                 "市场提醒去重：同级别近期已发送相同或高度相似事件，跳过重复投递"
             )
             continue
+        ai_insight = ""
+        if severity == "紧急":
+            ai_insight = monitor_messages._get_economic_urgent_ai_insight(
+                item, prompts or {}
+            )
         event_key = news_event_key(item)
         interactive_alert = (
             settings.MARKET_ALERT_INTERACTION_ENABLED
@@ -235,7 +243,7 @@ def _run_monitor_cycle(store: MonitorStore, now: datetime) -> None:
             dedup_key=f"news:{event_key}",
             alert_type="news",
             severity=severity,
-            content=_build_news_alert(item, severity),
+            content=_build_news_alert(item, severity, ai_insight=ai_insight),
             payload=item,
             now=now,
             reply_markup=(
